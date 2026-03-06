@@ -1,0 +1,55 @@
+mode: paper  # paper | live
+
+kalshi:
+  base_url: "https://api.elections.kalshi.com/trade-api/v2"
+  demo_url: "https://demo-api.kalshi.co/trade-api/v2"
+
+data_sources:
+  ensemble_url: "https://ensemble-api.open-meteo.com/v1/ensemble"
+  ensemble_model: "gfs025"
+  ensemble_members: 31
+  forecast_url: "https://api.open-meteo.com/v1/forecast"
+  hrrr_model: "hrrr_conus"
+  nws_base_url: "https://api.weather.gov"
+  nws_user_agent: "KalshiWeatherBot/1.0 (weather-bot@example.com)"
+  iem_cli_url: "https://mesonet.agron.iastate.edu/json/cli.py"
+  historical_archive_url: "https://archive-api.open-meteo.com/v1/archive"
+
+strategy:
+  edge_threshold: 0.08
+  min_edge_hrrr_confirm: 0.06
+  fractional_kelly: 0.15
+  max_position_pct: 0.05
+  max_position_dollars: 100
+  daily_loss_limit: 300
+  max_concurrent_positions: 20
+  max_positions_per_city: 6
+  max_positions_per_date: 4
+  min_contracts: 1
+  max_price: 0.92
+  min_price: 0.08
+  max_lead_hours: 72
+
+model_weights:
+  gfs_ensemble: 0.60
+  hrrr: 0.25
+  nws: 0.15
+  hrrr_weight_by_lead_hours:
+    0: 0.45
+    6: 0.35
+    12: 0.25
+    24: 0.15
+    48: 0.05
+
+paper_trading:
+  initial_bankroll: 10000
+
+scheduler:
+  ensemble_fetch_interval_minutes: 60
+  hrrr_fetch_interval_minutes: 30
+  market_scan_interval_minutes: 5
+  settlement_check_hour: 11
+  settlement_check_minute: 15
+
+database:
+  path: "data/weather_bot.db"

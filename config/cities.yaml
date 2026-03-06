@@ -1,0 +1,45 @@
+cities:
+  NYC:
+    station: KNYC
+    lat: 40.7794
+    lon: -73.9691
+    nws_office: OKX
+    timezone: America/New_York
+    kalshi_series: KXHIGHNY
+    cli_site: NYC
+
+  Chicago:
+    station: KMDW
+    lat: 41.7856
+    lon: -87.7527
+    nws_office: LOT
+    timezone: America/Chicago
+    kalshi_series: KXHIGHCHI
+    cli_site: MDW
+
+  Miami:
+    station: KMIA
+    lat: 25.7954
+    lon: -80.2901
+    nws_office: MFL
+    timezone: America/New_York
+    kalshi_series: KXHIGHMIA
+    cli_site: MIA
+
+  LA:
+    station: KLAX
+    lat: 33.9425
+    lon: -118.4080
+    nws_office: LOX
+    timezone: America/Los_Angeles
+    kalshi_series: KXHIGHLAX
+    cli_site: LAX
+
+  Denver:
+    station: KDEN
+    lat: 39.8617
+    lon: -104.6732
+    nws_office: BOU
+    timezone: America/Denver
+    kalshi_series: KXHIGHDEN
+    cli_site: DEN
