@@ -19,7 +19,7 @@ from src.data.hrrr_fetcher import HRRRFetcher
 from src.data.nws_client import NWSClient
 from src.data.kalshi_client import KalshiClient
 from src.data.kalshi_markets import KalshiMarketDiscovery, ParsedMarket
-from src.data.models import Signal, KalshiMarket, EnsembleForecast
+from src.data.models import Signal, KalshiMarket, EnsembleForecast, MarketPriceHistory
 from src.data.freshness import DataFreshnessTracker
 from src.signals.ensemble_probability import EnsembleProbabilityCalculator
 from src.signals.hrrr_correction import HRRRCorrector
@@ -248,9 +248,49 @@ def price_discovery_scan(ctx: BotContext):
 
     # Refresh prices for these markets
     discovery_markets = ctx.market_discovery.refresh_prices(discovery_markets)
+    _snapshot_prices(discovery_markets)
 
     # Run the standard trading logic scoped to just these markets
     _run_trading_cycle(ctx, discovery_markets, tag="price_discovery")
+
+
+# ---------------------------------------------------------------------------
+# Price history snapshots — record prices every refresh cycle
+# ---------------------------------------------------------------------------
+
+def _snapshot_prices(markets: list[ParsedMarket]) -> int:
+    """Record a price snapshot for each market into market_price_history.
+
+    Called after every refresh_prices() so we build continuous price history
+    from discovery through settlement.
+    """
+    if not markets:
+        return 0
+    session = get_session()
+    now = datetime.now(timezone.utc).isoformat()
+    count = 0
+    try:
+        for m in markets:
+            if m.yes_price is None:
+                continue
+            snapshot = MarketPriceHistory(
+                market_ticker=m.market_ticker,
+                captured_at=now,
+                yes_price=m.yes_price,
+                no_price=m.no_price,
+                volume=getattr(m, "volume", None),
+                status=getattr(m, "status", "open"),
+            )
+            session.add(snapshot)
+            count += 1
+        session.commit()
+        logger.debug("Snapshotted %d market prices", count)
+    except Exception as e:
+        session.rollback()
+        logger.debug("Price snapshot error: %s", e)
+    finally:
+        session.close()
+    return count
 
 
 # ---------------------------------------------------------------------------
@@ -531,6 +571,7 @@ def scan_and_trade(ctx: BotContext):
 
     # Refresh market prices (this IS an API call, but lightweight)
     ctx._active_markets = ctx.market_discovery.refresh_prices(ctx._active_markets)
+    _snapshot_prices(ctx._active_markets)
 
     # Run the shared trading cycle
     _run_trading_cycle(ctx, ctx._active_markets, tag="scan")

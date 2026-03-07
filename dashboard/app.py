@@ -101,6 +101,12 @@ def math_page():
     return send_from_directory(STATIC_DIR, "math.html")
 
 
+@app.route("/tracker")
+def tracker_page():
+    """Serve the Position Tracker page."""
+    return send_from_directory(STATIC_DIR, "tracker.html")
+
+
 @app.route("/<path:filename>")
 def static_files(filename):
     """Serve other static assets (CSS, JS, images) from dashboard/."""
@@ -1884,6 +1890,257 @@ def api_math_observation_histogram():
         })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Position Tracker API
+# ---------------------------------------------------------------------------
+
+def _format_contract_desc(row):
+    """Build human-readable contract description from DB row."""
+    if row["is_above_contract"]:
+        return f"Above {int(row['threshold_f'])}°F"
+    elif row["bracket_low"] is not None and row["bracket_high"] is not None:
+        return f"{int(row['bracket_low'])}–{int(row['bracket_high'])}°F"
+    elif row["bracket_high"] is not None:
+        return f"≤ {int(row['bracket_high'])}°F"
+    elif row["bracket_low"] is not None:
+        return f"≥ {int(row['bracket_low'])}°F"
+    return "Unknown"
+
+
+def _compute_exit_analysis(trade, current_market, latest_signal):
+    """Compute hold-vs-sell exit recommendation."""
+    if not trade or not current_market:
+        return None
+
+    entry_price = trade.get("fill_price") or trade.get("price", 0)
+    contracts = trade.get("contracts", 0)
+    side = trade.get("side", "yes")
+    current_yes = current_market.get("yes_price") or 0
+    model_prob = latest_signal.get("calibrated_prob") if latest_signal else None
+    lead_hours = latest_signal.get("lead_hours") if latest_signal else None
+    edge_at_entry = trade.get("edge") or 0
+
+    if side == "yes":
+        cost = entry_price * contracts
+        current_value = current_yes * contracts
+        unrealized_pnl = current_value - cost
+    else:
+        entry_no = 1.0 - entry_price
+        cost = entry_no * contracts
+        current_no = 1.0 - current_yes
+        current_value = current_no * contracts
+        unrealized_pnl = current_value - cost
+
+    # EV calculations
+    ev_hold = None
+    ev_sell = unrealized_pnl
+    breakeven_prob = None
+
+    if model_prob is not None:
+        if side == "yes":
+            ev_hold = model_prob * contracts - cost
+            breakeven_prob = current_yes
+        else:
+            ev_hold = (1.0 - model_prob) * contracts - cost
+            breakeven_prob = current_yes
+
+    # Current edge
+    current_edge = None
+    if model_prob is not None:
+        if side == "yes":
+            current_edge = model_prob - current_yes
+        else:
+            current_edge = (1.0 - model_prob) - (1.0 - current_yes)
+
+    # Recommendation
+    if ev_hold is not None:
+        if side == "yes":
+            overvalued = current_yes > model_prob
+        else:
+            overvalued = (1.0 - current_yes) > (1.0 - model_prob)
+
+        if overvalued:
+            recommendation = "SELL"
+            reason = "Market price exceeds model fair value — lock in profit"
+        elif unrealized_pnl > 0 and lead_hours is not None and lead_hours < 6:
+            recommendation = "HOLD (take profit?)"
+            reason = "Profitable with settlement approaching — edge window closing"
+        elif unrealized_pnl < 0 and current_edge is not None and abs(current_edge) < 0.03:
+            recommendation = "SELL (cut loss)"
+            reason = "Underwater with minimal remaining edge"
+        else:
+            recommendation = "HOLD"
+            reason = "Positive expected value — edge persists"
+    else:
+        recommendation = "HOLD"
+        reason = "No recent model signal for comparison"
+
+    # Time to settlement
+    time_to_settlement = None
+    close_time = current_market.get("close_time")
+    if close_time:
+        try:
+            from datetime import timezone
+            ct = close_time.replace("Z", "+00:00")
+            if "+" not in ct and "-" not in ct[10:]:
+                ct += "+00:00"
+            close_dt = datetime.fromisoformat(ct)
+            now = datetime.now(timezone.utc)
+            delta = close_dt - now
+            secs = max(0, delta.total_seconds())
+            hrs = int(secs // 3600)
+            mins = int((secs % 3600) // 60)
+            time_to_settlement = {
+                "hours": round(secs / 3600, 1),
+                "human": f"{hrs}h {mins}m",
+            }
+        except Exception:
+            pass
+
+    return {
+        "entry_price": entry_price,
+        "current_price": current_yes,
+        "contracts": contracts,
+        "side": side,
+        "cost": round(cost, 2),
+        "current_value": round(current_value, 2),
+        "unrealized_pnl": round(unrealized_pnl, 2),
+        "unrealized_pnl_pct": round(unrealized_pnl / cost * 100, 1) if cost > 0 else 0,
+        "model_prob": model_prob,
+        "ev_hold": round(ev_hold, 2) if ev_hold is not None else None,
+        "ev_sell": round(ev_sell, 2),
+        "breakeven_prob": breakeven_prob,
+        "current_edge": round(current_edge, 4) if current_edge is not None else None,
+        "edge_at_entry": edge_at_entry,
+        "recommendation": recommendation,
+        "reason": reason,
+        "lead_hours": lead_hours,
+        "time_to_settlement": time_to_settlement,
+    }
+
+
+@app.route("/api/tracker/positions")
+def api_tracker_positions():
+    """List positions available for tracking: open + recently settled."""
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        cur.execute("""
+            SELECT
+                t.trade_id, t.market_ticker, t.city, t.target_date,
+                t.side, t.contracts, t.price as entry_price,
+                t.fill_price, t.total_cost, t.model_prob, t.edge,
+                t.kelly_fraction, t.status, t.pnl, t.settled_at,
+                t.settlement_value, t.created_at,
+                km.close_time, km.threshold_f, km.is_above_contract,
+                km.bracket_low, km.bracket_high, km.yes_price as current_yes
+            FROM trades t
+            LEFT JOIN kalshi_markets km ON km.market_ticker = t.market_ticker
+            WHERE t.status IN ('filled', 'settled')
+            ORDER BY
+                CASE t.status WHEN 'filled' THEN 0 ELSE 1 END,
+                t.created_at DESC
+        """)
+        rows = cur.fetchall()
+
+        positions = []
+        for r in rows:
+            # Skip settled positions older than 7 days
+            if r["status"] == "settled" and r["settled_at"]:
+                try:
+                    settled_dt = datetime.fromisoformat(r["settled_at"].replace("Z", "+00:00"))
+                    from datetime import timezone
+                    if (datetime.now(timezone.utc) - settled_dt).days > 7:
+                        continue
+                except Exception:
+                    pass
+
+            positions.append({
+                "trade_id": r["trade_id"],
+                "market_ticker": r["market_ticker"],
+                "city": r["city"],
+                "target_date": r["target_date"],
+                "side": r["side"],
+                "contracts": r["contracts"],
+                "entry_price": r["fill_price"] or r["entry_price"],
+                "total_cost": r["total_cost"],
+                "model_prob": r["model_prob"],
+                "edge_at_entry": r["edge"],
+                "status": r["status"],
+                "pnl": r["pnl"],
+                "settlement_value": r["settlement_value"],
+                "entered_at": r["created_at"],
+                "current_yes": r["current_yes"],
+                "contract_desc": _format_contract_desc(r) if r["is_above_contract"] is not None else r["market_ticker"].split("-")[-1],
+            })
+
+        return jsonify(positions)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
+
+
+@app.route("/api/tracker/<market_ticker>")
+def api_tracker_detail(market_ticker):
+    """Full position data: price history, signal trajectory, exit analysis."""
+    conn = get_db()
+    cur = conn.cursor()
+    try:
+        # 1. Trade info (most recent active trade for this ticker)
+        cur.execute("""
+            SELECT * FROM trades
+            WHERE market_ticker = ? AND status IN ('filled', 'settled')
+            ORDER BY created_at DESC LIMIT 1
+        """, (market_ticker,))
+        trade_row = cur.fetchone()
+        trade = dict(trade_row) if trade_row else {}
+
+        # 2. Price history from market_price_history
+        cur.execute("""
+            SELECT captured_at, yes_price, no_price, volume, status
+            FROM market_price_history
+            WHERE market_ticker = ?
+            ORDER BY captured_at ASC
+        """, (market_ticker,))
+        price_history = [dict(r) for r in cur.fetchall()]
+
+        # 3. Signal history (model probability trajectory)
+        cur.execute("""
+            SELECT computed_at, calibrated_prob, ensemble_prob,
+                   market_yes_price, raw_edge, abs_edge, lead_hours
+            FROM signals
+            WHERE market_ticker = ?
+            ORDER BY computed_at ASC
+        """, (market_ticker,))
+        signal_history = [dict(r) for r in cur.fetchall()]
+
+        # 4. Current market data
+        cur.execute("""
+            SELECT * FROM kalshi_markets WHERE market_ticker = ?
+        """, (market_ticker,))
+        mkt_row = cur.fetchone()
+        current_market = dict(mkt_row) if mkt_row else {}
+
+        # 5. Latest signal for exit analysis
+        latest_signal = signal_history[-1] if signal_history else {}
+
+        # 6. Compute exit analysis
+        exit_analysis = _compute_exit_analysis(trade, current_market, latest_signal)
+
+        return jsonify({
+            "trade": trade,
+            "price_history": price_history,
+            "signal_history": signal_history,
+            "current_market": current_market,
+            "exit_analysis": exit_analysis,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------

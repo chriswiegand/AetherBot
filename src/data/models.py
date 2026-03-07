@@ -115,6 +115,24 @@ class KalshiMarket(Base):
     )
 
 
+class MarketPriceHistory(Base):
+    """Continuous price snapshots for discovered markets (one row per refresh)."""
+    __tablename__ = "market_price_history"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    market_ticker = Column(Text, nullable=False)
+    captured_at = Column(Text, nullable=False)   # ISO8601 UTC
+    yes_price = Column(Float)                     # best bid (0.0-1.0)
+    no_price = Column(Float)
+    volume = Column(Integer)
+    status = Column(Text)                         # open, closed, settled
+
+    __table_args__ = (
+        Index("idx_mph_ticker_time", "market_ticker", "captured_at"),
+        Index("idx_mph_captured", "captured_at"),
+    )
+
+
 class Signal(Base):
     """Computed model probabilities and edges per market."""
     __tablename__ = "signals"

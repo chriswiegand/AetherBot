@@ -1,0 +1,599 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>AetherBot - Position Tracker</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>%E2%9A%A1</text></svg>">
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3"></script>
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --bg-canvas:#0d1117;--bg-card:#161b22;--bg-card-alt:#1c2128;
+    --border:#30363d;--border-light:#484f58;
+    --text-primary:#e6edf3;--text-secondary:#8b949e;--text-muted:#6e7681;
+    --accent:#58a6ff;--green:#3fb950;--red:#f85149;--yellow:#d29922;--orange:#db6d28;
+    --purple:#a371f7;--pink:#f778ba;
+    --blue-badge:#1f6feb;--green-badge:#238636;--yellow-badge:#9e6a03;--red-badge:#da3633;
+    --radius:12px;--radius-sm:8px;--shadow:0 1px 3px rgba(0,0,0,.4);
+  }
+  html{font-size:16px;-webkit-text-size-adjust:100%}
+  body{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+    background:var(--bg-canvas);color:var(--text-primary);line-height:1.6;min-height:100vh;overflow-x:hidden}
+  .container{max-width:1200px;margin:0 auto;padding:12px}
+  @media(min-width:768px){.container{padding:24px 32px}}
+
+  /* Header */
+  .header{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;padding:16px 0 12px;border-bottom:1px solid var(--border);margin-bottom:20px}
+  .header h1{font-size:1.15rem;font-weight:700;display:flex;align-items:center;gap:6px}
+  .header h1 span{font-size:1.3rem}
+  .header-right{display:flex;align-items:center;gap:12px}
+  .header-link{color:var(--accent);text-decoration:none;font-size:.8rem}
+  .header-link:hover{text-decoration:underline}
+
+  /* Cards */
+  .card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:16px;box-shadow:var(--shadow)}
+  .card-title{font-size:.9rem;font-weight:700;margin-bottom:12px;color:var(--text-primary)}
+
+  /* Controls bar */
+  .controls-bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:14px 16px}
+  .controls-bar label{font-size:.75rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.04em;font-weight:600}
+  .controls-bar select{background:var(--bg-canvas);border:1px solid var(--border);border-radius:6px;color:var(--text-primary);padding:6px 10px;font-size:.82rem;min-width:200px;cursor:pointer}
+  .controls-bar select:focus{border-color:var(--accent);outline:none}
+  .controls-bar .refresh-btn{background:var(--bg-card-alt);border:1px solid var(--border);border-radius:6px;color:var(--text-primary);padding:6px 12px;font-size:.78rem;cursor:pointer;transition:border-color .2s}
+  .controls-bar .refresh-btn:hover{border-color:var(--accent)}
+  .auto-refresh-label{font-size:.68rem;color:var(--text-muted)}
+
+  /* Exit analysis card */
+  .exit-card{padding:20px;position:relative;overflow:hidden}
+  .exit-card.hold{border-left:4px solid var(--green)}
+  .exit-card.sell{border-left:4px solid var(--red)}
+  .exit-card.neutral{border-left:4px solid var(--yellow)}
+  .exit-header{display:flex;align-items:center;gap:10px;margin-bottom:14px}
+  .exit-badge{font-size:.75rem;font-weight:700;padding:4px 12px;border-radius:20px;text-transform:uppercase;letter-spacing:.05em}
+  .exit-badge.hold{background:rgba(63,185,80,.15);color:var(--green)}
+  .exit-badge.sell{background:rgba(248,81,73,.15);color:var(--red)}
+  .exit-badge.neutral{background:rgba(210,153,34,.15);color:var(--yellow)}
+  .exit-reason{font-size:.78rem;color:var(--text-secondary);font-style:italic}
+  .exit-metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px}
+  .exit-metric{text-align:center;padding:10px;background:var(--bg-card-alt);border-radius:var(--radius-sm);border:1px solid var(--border)}
+  .exit-metric .label{font-size:.62rem;text-transform:uppercase;letter-spacing:.06em;color:var(--text-muted);margin-bottom:2px}
+  .exit-metric .value{font-size:1.05rem;font-weight:700;font-family:'SF Mono',Monaco,Consolas,monospace}
+  .exit-metric .value.green{color:var(--green)}
+  .exit-metric .value.red{color:var(--red)}
+  .exit-metric .value.blue{color:var(--accent)}
+  .exit-metric .value.yellow{color:var(--yellow)}
+
+  /* Chart */
+  .chart-wrap{position:relative;width:100%;height:320px}
+  @media(min-width:768px){.chart-wrap{height:400px}}
+
+  /* Two column grid */
+  .detail-grid{display:grid;grid-template-columns:1fr;gap:16px}
+  @media(min-width:768px){.detail-grid{grid-template-columns:1fr 1fr}}
+
+  /* Detail rows */
+  .detail-row{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px solid rgba(48,54,61,.5);font-size:.82rem}
+  .detail-row:last-child{border-bottom:none}
+  .detail-row .label{color:var(--text-secondary)}
+  .detail-row .value{font-weight:600;font-family:'SF Mono',Monaco,Consolas,monospace}
+  .text-green{color:var(--green)!important}
+  .text-red{color:var(--red)!important}
+  .text-blue{color:var(--accent)!important}
+  .text-yellow{color:var(--yellow)!important}
+
+  /* Placeholder */
+  .placeholder{text-align:center;padding:48px 16px;color:var(--text-muted);font-size:.85rem}
+  .placeholder .icon{font-size:2.5rem;margin-bottom:12px;opacity:.5}
+
+  /* Badge */
+  .badge{font-size:.62rem;font-weight:700;padding:2px 8px;border-radius:10px;text-transform:uppercase;letter-spacing:.04em}
+  .badge-green{background:var(--green-badge);color:#fff}
+  .badge-red{background:var(--red-badge);color:#fff}
+  .badge-blue{background:var(--blue-badge);color:#fff}
+  .badge-yellow{background:var(--yellow-badge);color:#fff}
+
+  /* Settlement banner */
+  .settlement-banner{padding:12px 16px;border-radius:var(--radius-sm);margin-bottom:16px;font-size:.82rem;font-weight:600;display:flex;align-items:center;gap:8px}
+  .settlement-banner.win{background:rgba(63,185,80,.1);border:1px solid rgba(63,185,80,.3);color:var(--green)}
+  .settlement-banner.loss{background:rgba(248,81,73,.1);border:1px solid rgba(248,81,73,.3);color:var(--red)}
+
+  /* Footer */
+  .footer{text-align:center;padding:24px 0;margin-top:32px;font-size:.7rem;color:var(--text-muted);border-top:1px solid var(--border)}
+  .footer a{color:var(--accent);text-decoration:none}
+</style>
+</head>
+<body>
+<div class="container">
+
+  <!-- Header -->
+  <header class="header">
+    <div class="header-left">
+      <h1><span>&#9889;</span> AetherBot &mdash; Position Tracker</h1>
+    </div>
+    <div class="header-right">
+      <a href="/" class="header-link">&larr; Dashboard</a>
+      <a href="/math" class="header-link">Math</a>
+      <a href="/strategy-lab" class="header-link">Strategy Lab</a>
+    </div>
+  </header>
+
+  <!-- Controls -->
+  <div class="card controls-bar" id="controls">
+    <label for="position-select">Position</label>
+    <select id="position-select" onchange="loadPosition()">
+      <option value="">Loading...</option>
+    </select>
+    <button class="refresh-btn" onclick="loadPosition()">&#x21bb; Refresh</button>
+    <span class="auto-refresh-label" id="refresh-label">Auto-refresh: 60s</span>
+  </div>
+
+  <!-- Exit Analysis -->
+  <div class="card exit-card neutral" id="exit-card" style="display:none">
+    <div class="exit-header">
+      <span class="exit-badge neutral" id="exit-badge">--</span>
+      <span class="exit-reason" id="exit-reason"></span>
+    </div>
+    <div class="exit-metrics" id="exit-metrics"></div>
+  </div>
+
+  <!-- Settlement Banner (for settled positions) -->
+  <div class="settlement-banner" id="settlement-banner" style="display:none"></div>
+
+  <!-- Price Chart -->
+  <div class="card" id="chart-card" style="display:none">
+    <div class="card-title">Price &amp; Model Trajectory</div>
+    <div class="chart-wrap">
+      <canvas id="price-chart"></canvas>
+    </div>
+  </div>
+
+  <!-- Detail Grid -->
+  <div class="detail-grid" id="detail-grid" style="display:none">
+    <div class="card" id="position-card">
+      <div class="card-title">Position Details</div>
+      <div id="position-details"></div>
+    </div>
+    <div class="card" id="edge-card">
+      <div class="card-title">Edge Evolution</div>
+      <div id="edge-details"></div>
+    </div>
+  </div>
+
+  <!-- Placeholder -->
+  <div class="placeholder" id="empty-placeholder">
+    <div class="icon">&#x1F4CA;</div>
+    <div>Select a position above to view price history,<br>entry/exit analysis, and model trajectory.</div>
+  </div>
+
+  <footer class="footer">
+    AetherBot v1.0 &middot; March 2026 &middot; <a href="/">Back to Dashboard</a>
+  </footer>
+</div>
+
+<script>
+// ---------------------------------------------------------------------------
+//  Globals
+// ---------------------------------------------------------------------------
+var $ = function(id){ return document.getElementById(id); };
+var priceChart = null;
+var refreshTimer = null;
+var CHART_DEFAULTS = {
+  gridColor:'rgba(48,54,61,.6)',
+  tickColor:'#8b949e',
+  tickFont:{size:10},
+  tooltip:{
+    backgroundColor:'#1c2128',borderColor:'#30363d',borderWidth:1,
+    titleColor:'#e6edf3',bodyColor:'#8b949e',
+    titleFont:{size:11,weight:'bold'},bodyFont:{size:10},
+    padding:8,cornerRadius:6,displayColors:false
+  }
+};
+
+// ---------------------------------------------------------------------------
+//  Init: Load positions dropdown
+// ---------------------------------------------------------------------------
+(function init(){
+  fetch('/api/tracker/positions')
+    .then(function(r){ return r.json(); })
+    .then(function(data){
+      var sel = $('position-select');
+      if(!data || !data.length){
+        sel.innerHTML = '<option value="">No positions found</option>';
+        return;
+      }
+      var opts = '<option value="">Select a position...</option>';
+      data.forEach(function(p){
+        var status = p.status === 'settled' ? ' [SETTLED]' : '';
+        var pnlStr = p.unrealized_pnl_pct ? ' (' + p.unrealized_pnl_pct + '%)' : '';
+        var label = p.city + ' ' + p.contract_desc + ' ' + p.side.toUpperCase() +
+                    ' @ ' + (p.entry_price*100).toFixed(0) + 'c' +
+                    ' x' + p.contracts + status;
+        opts += '<option value="'+p.market_ticker+'">'+label+'</option>';
+      });
+      sel.innerHTML = opts;
+    })
+    .catch(function(e){ console.error('Failed to load positions:', e); });
+})();
+
+// ---------------------------------------------------------------------------
+//  Load Position Data
+// ---------------------------------------------------------------------------
+function loadPosition(){
+  var ticker = $('position-select').value;
+  if(!ticker){
+    showPlaceholder(); return;
+  }
+  fetch('/api/tracker/' + ticker)
+    .then(function(r){ return r.json(); })
+    .then(function(data){
+      if(data.error){
+        console.error(data.error);
+        showPlaceholder(); return;
+      }
+      renderAll(data);
+      startAutoRefresh();
+    })
+    .catch(function(e){ console.error('Failed to load position:', e); });
+}
+
+function showPlaceholder(){
+  $('empty-placeholder').style.display = 'block';
+  $('exit-card').style.display = 'none';
+  $('chart-card').style.display = 'none';
+  $('detail-grid').style.display = 'none';
+  $('settlement-banner').style.display = 'none';
+  if(refreshTimer) clearInterval(refreshTimer);
+}
+
+function startAutoRefresh(){
+  if(refreshTimer) clearInterval(refreshTimer);
+  refreshTimer = setInterval(loadPosition, 60000);
+}
+
+// ---------------------------------------------------------------------------
+//  Render all sections
+// ---------------------------------------------------------------------------
+function renderAll(data){
+  $('empty-placeholder').style.display = 'none';
+  $('exit-card').style.display = 'block';
+  $('chart-card').style.display = 'block';
+  $('detail-grid').style.display = 'grid';
+
+  renderSettlementBanner(data);
+  renderExitAnalysis(data.exit_analysis);
+  renderPriceChart(data);
+  renderPositionDetails(data);
+  renderEdgeDetails(data);
+}
+
+// ---------------------------------------------------------------------------
+//  Settlement Banner
+// ---------------------------------------------------------------------------
+function renderSettlementBanner(data){
+  var banner = $('settlement-banner');
+  var trade = data.trade;
+  if(!trade || trade.status !== 'settled'){
+    banner.style.display = 'none';
+    return;
+  }
+  var won = (trade.side === 'yes' && trade.settlement_value === 100) ||
+            (trade.side === 'no' && trade.settlement_value === 0);
+  var pnl = trade.pnl || 0;
+  banner.className = 'settlement-banner ' + (won ? 'win' : 'loss');
+  banner.innerHTML = (won ? '&#x2705; ' : '&#x274C; ') +
+    'SETTLED — ' + (won ? 'WON' : 'LOST') +
+    ' &nbsp; PnL: ' + (pnl >= 0 ? '+' : '') + '$' + pnl.toFixed(2);
+  banner.style.display = 'flex';
+}
+
+// ---------------------------------------------------------------------------
+//  Exit Analysis Card
+// ---------------------------------------------------------------------------
+function renderExitAnalysis(ea){
+  if(!ea){
+    $('exit-card').style.display = 'none';
+    return;
+  }
+
+  var rec = ea.recommendation || '';
+  var isSell = rec.indexOf('SELL') >= 0;
+  var isHold = rec.indexOf('HOLD') >= 0;
+  var cls = isSell ? 'sell' : (isHold ? 'hold' : 'neutral');
+
+  var card = $('exit-card');
+  card.className = 'card exit-card ' + cls;
+
+  var badge = $('exit-badge');
+  badge.className = 'exit-badge ' + cls;
+  badge.textContent = rec;
+
+  $('exit-reason').textContent = ea.reason || '';
+
+  var metrics = '';
+
+  // EV Hold
+  if(ea.ev_hold !== null){
+    var holdCls = ea.ev_hold >= 0 ? 'green' : 'red';
+    metrics += '<div class="exit-metric"><div class="label">EV (Hold)</div><div class="value '+holdCls+'">' +
+      (ea.ev_hold >= 0 ? '+' : '') + '$' + ea.ev_hold.toFixed(2) + '</div></div>';
+  }
+
+  // EV Sell
+  var sellCls = ea.ev_sell >= 0 ? 'green' : 'red';
+  metrics += '<div class="exit-metric"><div class="label">EV (Sell Now)</div><div class="value '+sellCls+'">' +
+    (ea.ev_sell >= 0 ? '+' : '') + '$' + ea.ev_sell.toFixed(2) + '</div></div>';
+
+  // Unrealized PnL
+  var pnlCls = ea.unrealized_pnl >= 0 ? 'green' : 'red';
+  metrics += '<div class="exit-metric"><div class="label">Unrealized PnL</div><div class="value '+pnlCls+'">' +
+    (ea.unrealized_pnl >= 0 ? '+' : '') + '$' + ea.unrealized_pnl.toFixed(2) +
+    ' (' + (ea.unrealized_pnl_pct >= 0 ? '+' : '') + ea.unrealized_pnl_pct.toFixed(1) + '%)</div></div>';
+
+  // Current Edge
+  if(ea.current_edge !== null){
+    var edgeCls = ea.current_edge > 0 ? 'green' : (ea.current_edge < -0.03 ? 'red' : 'yellow');
+    metrics += '<div class="exit-metric"><div class="label">Current Edge</div><div class="value '+edgeCls+'">' +
+      (ea.current_edge >= 0 ? '+' : '') + (ea.current_edge * 100).toFixed(1) + '%</div></div>';
+  }
+
+  // Model Prob
+  if(ea.model_prob !== null){
+    metrics += '<div class="exit-metric"><div class="label">Model Prob</div><div class="value blue">' +
+      (ea.model_prob * 100).toFixed(1) + '%</div></div>';
+  }
+
+  // Time to Settlement
+  if(ea.time_to_settlement){
+    metrics += '<div class="exit-metric"><div class="label">Settlement In</div><div class="value">' +
+      ea.time_to_settlement.human + '</div></div>';
+  }
+
+  $('exit-metrics').innerHTML = metrics;
+}
+
+// ---------------------------------------------------------------------------
+//  Price Chart
+// ---------------------------------------------------------------------------
+function renderPriceChart(data){
+  if(priceChart){ priceChart.destroy(); priceChart = null; }
+
+  var ph = data.price_history || [];
+  var sh = data.signal_history || [];
+  var trade = data.trade || {};
+  var ea = data.exit_analysis || {};
+
+  // Price line data
+  var priceData = ph.map(function(p){
+    return {x: new Date(p.captured_at), y: p.yes_price};
+  });
+
+  // If sparse, also include signal snapshots
+  if(priceData.length < 5 && sh.length > 0){
+    sh.forEach(function(s){
+      if(s.market_yes_price != null){
+        priceData.push({x: new Date(s.computed_at), y: s.market_yes_price});
+      }
+    });
+    // Dedupe and sort
+    var seen = {};
+    priceData = priceData.filter(function(p){
+      var k = p.x.getTime();
+      if(seen[k]) return false;
+      seen[k] = true; return true;
+    }).sort(function(a,b){ return a.x - b.x; });
+  }
+
+  // Add current price as final point
+  if(ea.current_price != null && priceData.length > 0){
+    var lastTime = priceData[priceData.length - 1].x;
+    var now = new Date();
+    if(now - lastTime > 30000){ // Only add if >30s gap
+      priceData.push({x: now, y: ea.current_price});
+    }
+  }
+
+  // Model fair value line
+  var modelData = sh.filter(function(s){ return s.calibrated_prob != null; })
+    .map(function(s){ return {x: new Date(s.computed_at), y: s.calibrated_prob}; });
+
+  // Annotations
+  var annotations = {};
+  if(trade.created_at){
+    annotations.entryLine = {
+      type:'line', xMin: new Date(trade.created_at), xMax: new Date(trade.created_at),
+      borderColor:'rgba(63,185,80,0.8)', borderWidth:2, borderDash:[],
+      label:{
+        display:true,
+        content:'ENTRY @ ' + ((trade.fill_price || trade.price) * 100).toFixed(0) + 'c',
+        position:'start', backgroundColor:'#238636', color:'#fff',
+        font:{size:10,weight:'bold'}, padding:4, borderRadius:4,
+      }
+    };
+    annotations.entryPrice = {
+      type:'line',
+      yMin: trade.fill_price || trade.price, yMax: trade.fill_price || trade.price,
+      borderColor:'rgba(63,185,80,0.25)', borderDash:[4,4], borderWidth:1,
+    };
+  }
+
+  // Fair value horizontal line (latest model)
+  if(ea.model_prob != null){
+    annotations.fairValue = {
+      type:'line',
+      yMin: ea.model_prob, yMax: ea.model_prob,
+      borderColor:'rgba(88,166,255,0.3)', borderDash:[6,4], borderWidth:1,
+      label:{
+        display:true,
+        content:'Fair Value ' + (ea.model_prob * 100).toFixed(1) + 'c',
+        position:'end', backgroundColor:'rgba(31,111,235,0.8)', color:'#fff',
+        font:{size:9}, padding:3, borderRadius:3,
+      }
+    };
+  }
+
+  var datasets = [
+    {
+      label:'Market YES Price',
+      data:priceData,
+      borderColor:'#58a6ff',
+      backgroundColor:'rgba(88,166,255,0.06)',
+      fill:true,
+      tension:0.3,
+      pointRadius: priceData.length < 20 ? 3 : 0,
+      pointHitRadius:8,
+      pointBackgroundColor:'#58a6ff',
+      borderWidth:2,
+    }
+  ];
+
+  if(modelData.length > 0){
+    datasets.push({
+      label:'Model Fair Value',
+      data:modelData,
+      borderColor:'#3fb950',
+      borderDash:[6,4],
+      borderWidth:1.5,
+      pointRadius: modelData.length < 20 ? 2 : 0,
+      pointBackgroundColor:'#3fb950',
+      fill:false,
+    });
+  }
+
+  var ctx = $('price-chart').getContext('2d');
+  priceChart = new Chart(ctx, {
+    type:'line',
+    data:{datasets:datasets},
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      interaction:{mode:'index',intersect:false},
+      plugins:{
+        legend:{display:true,position:'bottom',labels:{color:'#8b949e',font:{size:10},boxWidth:12,padding:16}},
+        tooltip:{
+          ...CHART_DEFAULTS.tooltip,
+          callbacks:{
+            title:function(items){
+              if(!items.length) return '';
+              var d = new Date(items[0].parsed.x);
+              return d.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + ' ' +
+                     d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
+            },
+            label:function(ctx){
+              return ctx.dataset.label + ': ' + (ctx.parsed.y * 100).toFixed(1) + 'c';
+            }
+          }
+        },
+        annotation:{annotations:annotations}
+      },
+      scales:{
+        x:{
+          type:'time',
+          time:{tooltipFormat:'MMM d, HH:mm', displayFormats:{minute:'HH:mm',hour:'MMM d HH:mm',day:'MMM d'}},
+          grid:{color:CHART_DEFAULTS.gridColor},
+          ticks:{color:CHART_DEFAULTS.tickColor,font:CHART_DEFAULTS.tickFont,maxRotation:0},
+        },
+        y:{
+          min:0,
+          grid:{color:CHART_DEFAULTS.gridColor},
+          ticks:{
+            color:CHART_DEFAULTS.tickColor,font:CHART_DEFAULTS.tickFont,
+            callback:function(v){return (v*100).toFixed(0)+'c';}
+          },
+          title:{display:true,text:'Price (cents)',color:'#8b949e',font:{size:11}},
+        }
+      }
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+//  Position Details
+// ---------------------------------------------------------------------------
+function renderPositionDetails(data){
+  var trade = data.trade || {};
+  var ea = data.exit_analysis || {};
+  if(!trade.market_ticker){ $('position-details').innerHTML = '<div class="placeholder">No trade data</div>'; return; }
+
+  var entryPrice = trade.fill_price || trade.price || 0;
+  var currentPrice = ea.current_price || 0;
+  var pnlVal = ea.unrealized_pnl || 0;
+  var pnlPct = ea.unrealized_pnl_pct || 0;
+  var pnlCls = pnlVal >= 0 ? 'text-green' : 'text-red';
+
+  // Time held
+  var held = '--';
+  if(trade.created_at){
+    var diffMs = Date.now() - new Date(trade.created_at).getTime();
+    if(trade.status === 'settled' && trade.settled_at){
+      diffMs = new Date(trade.settled_at).getTime() - new Date(trade.created_at).getTime();
+    }
+    var hrs = Math.floor(diffMs / 3600000);
+    var mins = Math.floor((diffMs % 3600000) / 60000);
+    held = hrs + 'h ' + mins + 'm';
+  }
+
+  var rows = [
+    {l:'Ticker', v:trade.market_ticker},
+    {l:'Side', v:'<span class="'+(trade.side==='yes'?'text-green':'text-red')+'">'+trade.side.toUpperCase()+'</span> &middot; '+trade.contracts+' contracts'},
+    {l:'Entry Price', v:(entryPrice*100).toFixed(1)+'c'},
+    {l:'Cost', v:'$'+ea.cost.toFixed(2)},
+    {l:'Current Price', v:'<span class="text-blue">'+(currentPrice*100).toFixed(1)+'c</span>'},
+    {l:'Current Value', v:'$'+ea.current_value.toFixed(2)},
+    {l:'Unrealized PnL', v:'<span class="'+pnlCls+'">'+(pnlVal>=0?'+':'')+' $'+pnlVal.toFixed(2)+' ('+(pnlPct>=0?'+':'')+pnlPct.toFixed(1)+'%)</span>'},
+    {l:'Time Held', v:held},
+    {l:'Status', v:'<span class="badge '+(trade.status==='filled'?'badge-green':(trade.status==='settled'?'badge-blue':'badge-yellow'))+'">'+trade.status.toUpperCase()+'</span>'},
+  ];
+
+  $('position-details').innerHTML = rows.map(function(r){
+    return '<div class="detail-row"><span class="label">'+r.l+'</span><span class="value">'+r.v+'</span></div>';
+  }).join('');
+}
+
+// ---------------------------------------------------------------------------
+//  Edge Evolution
+// ---------------------------------------------------------------------------
+function renderEdgeDetails(data){
+  var trade = data.trade || {};
+  var ea = data.exit_analysis || {};
+  var sh = data.signal_history || [];
+
+  var edgeAtEntry = trade.edge || 0;
+  var currentEdge = ea.current_edge;
+  var modelProb = ea.model_prob;
+  var marketPrice = ea.current_price || 0;
+  var leadHours = ea.lead_hours;
+
+  // Edge trend
+  var trend = '--';
+  if(currentEdge !== null && currentEdge !== undefined){
+    var edgeDiff = Math.abs(currentEdge) - Math.abs(edgeAtEntry);
+    if(edgeDiff > 0.02) trend = '<span class="text-green">&#x2197; widening</span>';
+    else if(edgeDiff < -0.02) trend = '<span class="text-yellow">&#x2198; narrowing</span>';
+    else trend = '<span class="text-blue">&#x2192; stable</span>';
+  }
+
+  // Lead hours at entry (from first signal)
+  var entryLead = sh.length > 0 ? sh[0].lead_hours : null;
+
+  var rows = [
+    {l:'Edge at Entry', v:'<span class="text-green">'+(edgeAtEntry>=0?'+':'')+(edgeAtEntry*100).toFixed(1)+'%</span>'},
+    {l:'Current Edge', v: currentEdge !== null ?
+      '<span class="'+(currentEdge>0?'text-green':(currentEdge<-0.03?'text-red':'text-yellow'))+'">'+(currentEdge>=0?'+':'')+(currentEdge*100).toFixed(1)+'%</span>'
+      : '--'},
+    {l:'Edge Trend', v:trend},
+    {l:'Lead Hours', v: (entryLead !== null ? entryLead.toFixed(1)+'h' : '--') + ' &rarr; ' + (leadHours !== null ? leadHours.toFixed(1)+'h' : '--')},
+    {l:'Model Probability', v: modelProb !== null ? '<span class="text-blue">'+(modelProb*100).toFixed(1)+'%</span>' : '--'},
+    {l:'Market Price', v:(marketPrice*100).toFixed(1)+'c'},
+    {l:'Breakeven Prob', v: ea.breakeven_prob !== null ? (ea.breakeven_prob*100).toFixed(1)+'%' : '--'},
+    {l:'Signal Snapshots', v:sh.length},
+  ];
+
+  $('edge-details').innerHTML = rows.map(function(r){
+    return '<div class="detail-row"><span class="label">'+r.l+'</span><span class="value">'+r.v+'</span></div>';
+  }).join('');
+}
+</script>
+</body>
+</html>
