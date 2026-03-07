@@ -95,6 +95,12 @@ def strategy_lab():
     return send_from_directory(STATIC_DIR, "strategy-lab.html")
 
 
+@app.route("/math")
+def math_page():
+    """Serve the Math (pipeline visualization) page."""
+    return send_from_directory(STATIC_DIR, "math.html")
+
+
 @app.route("/<path:filename>")
 def static_files(filename):
     """Serve other static assets (CSS, JS, images) from dashboard/."""
@@ -1117,6 +1123,765 @@ def api_create_strategy_from_optimization(rid):
         return jsonify(dict(strat_row)), 201
     except sqlite3.IntegrityError:
         return jsonify({"error": f"Strategy name '{name}' already exists"}), 409
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ===========================================================================
+# DATA FRESHNESS & CONTROL PANEL API
+# ===========================================================================
+
+def _compute_staleness_minutes(latest_time):
+    """Compute minutes since a timestamp string. Returns 9999 if None."""
+    if not latest_time:
+        return 9999.0
+    try:
+        from datetime import timezone
+        ts = latest_time.replace(" ", "T")
+        if not ts.endswith("Z") and "+" not in ts and "-" not in ts[10:]:
+            ts += "Z"
+        dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        delta = datetime.now(timezone.utc) - dt
+        return max(0.0, delta.total_seconds() / 60.0)
+    except Exception:
+        return 9999.0
+
+
+def _staleness_status(source, staleness_min):
+    """Return 'green', 'yellow', or 'red' based on staleness."""
+    thresholds = {
+        "gfs_ensemble": {"green": 420, "yellow": 780},
+        "hrrr":         {"green": 120, "yellow": 240},
+        "nws":          {"green": 360, "yellow": 720},
+    }
+    t = thresholds.get(source, {"green": 360, "yellow": 720})
+    if staleness_min <= t["green"]:
+        return "green"
+    elif staleness_min <= t["yellow"]:
+        return "yellow"
+    return "red"
+
+
+@app.route("/api/data-freshness")
+def api_data_freshness():
+    """Return freshness status for GFS, HRRR, NWS data sources.
+    Also returns price discovery market count and total active markets."""
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+
+        sources = []
+
+        # GFS Ensemble — use fetched_at for "last refreshed" display,
+        # model_run_time for freshness logic (is there a newer run available?)
+        cur.execute(
+            "SELECT MAX(model_run_time) AS latest_run, MAX(fetched_at) AS latest_fetch "
+            "FROM ensemble_forecasts"
+        )
+        row = cur.fetchone()
+        gfs_run = row["latest_run"] if row else None
+        gfs_fetch = row["latest_fetch"] if row else None
+        gfs_staleness = _compute_staleness_minutes(gfs_fetch)
+        gfs_run_staleness = _compute_staleness_minutes(gfs_run)
+        sources.append({
+            "source": "gfs_ensemble",
+            "label": "GFS Ensemble",
+            "latest_model_run": gfs_run,
+            "latest_fetch": gfs_fetch,
+            "staleness_minutes": round(gfs_staleness, 1),
+            "status": _staleness_status("gfs_ensemble", gfs_run_staleness),
+            "has_data": gfs_fetch is not None,
+        })
+
+        # HRRR
+        cur.execute(
+            "SELECT MAX(model_run_time) AS latest_run, MAX(fetched_at) AS latest_fetch "
+            "FROM hrrr_forecasts"
+        )
+        row = cur.fetchone()
+        hrrr_run = row["latest_run"] if row else None
+        hrrr_fetch = row["latest_fetch"] if row else None
+        hrrr_staleness = _compute_staleness_minutes(hrrr_fetch)
+        hrrr_run_staleness = _compute_staleness_minutes(hrrr_run)
+        sources.append({
+            "source": "hrrr",
+            "label": "HRRR",
+            "latest_model_run": hrrr_run,
+            "latest_fetch": hrrr_fetch,
+            "staleness_minutes": round(hrrr_staleness, 1),
+            "status": _staleness_status("hrrr", hrrr_run_staleness),
+            "has_data": hrrr_fetch is not None,
+        })
+
+        # NWS (no model_run_time concept, just fetched_at)
+        cur.execute("SELECT MAX(fetched_at) AS latest FROM nws_forecasts")
+        row = cur.fetchone()
+        nws_latest = row["latest"] if row else None
+        nws_staleness = _compute_staleness_minutes(nws_latest)
+        sources.append({
+            "source": "nws",
+            "label": "NWS",
+            "latest_model_run": nws_latest,
+            "latest_fetch": nws_latest,
+            "staleness_minutes": round(nws_staleness, 1),
+            "status": _staleness_status("nws", nws_staleness),
+            "has_data": nws_latest is not None,
+        })
+
+        # Active markets count
+        cur.execute("SELECT COUNT(*) AS cnt FROM kalshi_markets WHERE status IN ('open', 'active')")
+        total_markets = cur.fetchone()["cnt"]
+
+        # Price discovery count (markets discovered in last 2 hours)
+        price_discovery_count = 0
+        try:
+            from datetime import timezone
+            cutoff = (datetime.now(timezone.utc) - __import__("datetime").timedelta(hours=2)).isoformat()
+            cur.execute(
+                "SELECT COUNT(*) AS cnt FROM kalshi_markets WHERE first_discovered_at >= ? AND status IN ('open', 'active')",
+                (cutoff,)
+            )
+            price_discovery_count = cur.fetchone()["cnt"]
+        except Exception:
+            pass  # Column may not exist yet
+
+        # Last signal computed_at
+        cur.execute("SELECT MAX(computed_at) AS latest FROM signals")
+        row = cur.fetchone()
+        last_scan = row["latest"] if row else None
+        last_scan_minutes = _compute_staleness_minutes(last_scan)
+
+        conn.close()
+
+        return jsonify({
+            "sources": sources,
+            "total_markets": total_markets,
+            "price_discovery_count": price_discovery_count,
+            "last_scan": last_scan,
+            "last_scan_minutes_ago": round(last_scan_minutes, 1),
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/refresh/<source>", methods=["POST"])
+def api_manual_refresh(source):
+    """Trigger manual data refresh by writing a signal file.
+    The bot's smart_data_fetch watchdog will pick it up on its next cycle."""
+    valid_sources = {"gfs", "hrrr", "nws"}
+    if source not in valid_sources:
+        return jsonify({"error": f"Invalid source. Use one of: {valid_sources}"}), 400
+
+    try:
+        signal_dir = PROJECT_ROOT / "data" / "signals"
+        signal_dir.mkdir(parents=True, exist_ok=True)
+        signal_file = signal_dir / f"refresh_{source}.signal"
+        signal_file.write_text(datetime.utcnow().isoformat() + "Z")
+        return jsonify({"status": "queued", "source": source})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ===========================================================================
+# EDGE HISTORY API (for edge trajectory chart)
+# ===========================================================================
+
+@app.route("/api/signals/edge-history")
+def api_edge_history():
+    """Return edge trajectory over time for given market(s).
+
+    Query params:
+        market_ticker - single ticker (e.g., KXHIGHNY-26MAR06-T55)
+        city - filter by city
+        target_date - filter by target_date
+        hours - how many hours of history (default: 24)
+    """
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+
+        market_ticker = request.args.get("market_ticker")
+        city = request.args.get("city")
+        target_date = request.args.get("target_date")
+        hours = int(request.args.get("hours", 24))
+
+        from datetime import timezone
+        cutoff = (datetime.now(timezone.utc) - __import__("datetime").timedelta(hours=hours)).isoformat()
+
+        conditions = ["s.computed_at >= ?"]
+        params = [cutoff]
+
+        if market_ticker:
+            conditions.append("s.market_ticker = ?")
+            params.append(market_ticker)
+        if city:
+            conditions.append("s.city = ?")
+            params.append(city)
+        if target_date:
+            conditions.append("s.target_date = ?")
+            params.append(target_date)
+
+        where_clause = " AND ".join(conditions)
+
+        cur.execute(
+            f"""
+            SELECT
+                s.computed_at,
+                s.market_ticker,
+                s.city,
+                s.target_date,
+                s.raw_edge,
+                s.abs_edge,
+                s.calibrated_prob,
+                s.market_yes_price,
+                s.lead_hours
+            FROM signals s
+            WHERE {where_clause}
+            ORDER BY s.computed_at ASC
+            LIMIT 5000
+            """,
+            params,
+        )
+        rows = cur.fetchall()
+        conn.close()
+
+        # Group by market_ticker for easy charting
+        by_ticker: dict[str, list] = {}
+        for r in rows:
+            ticker = r["market_ticker"]
+            by_ticker.setdefault(ticker, []).append({
+                "t": r["computed_at"],
+                "edge": r["raw_edge"],
+                "abs_edge": r["abs_edge"],
+                "prob": r["calibrated_prob"],
+                "price": r["market_yes_price"],
+                "lead_hours": r["lead_hours"],
+            })
+
+        return jsonify({
+            "tickers": list(by_ticker.keys()),
+            "series": by_ticker,
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ===========================================================================
+# MATH / PIPELINE VISUALIZATION API
+# ===========================================================================
+
+def _interpolate_hrrr_weight(lead_hours):
+    """Interpolate HRRR weight based on lead hours (mirrors ModelWeightsConfig)."""
+    breakpoints = {0: 0.45, 6: 0.35, 12: 0.25, 24: 0.15, 48: 0.05}
+    keys = sorted(breakpoints)
+    if lead_hours <= keys[0]:
+        return breakpoints[keys[0]]
+    if lead_hours >= keys[-1]:
+        return breakpoints[keys[-1]]
+    for i in range(len(keys) - 1):
+        lo, hi = keys[i], keys[i + 1]
+        if lo <= lead_hours <= hi:
+            frac = (lead_hours - lo) / (hi - lo)
+            return breakpoints[lo] + frac * (breakpoints[hi] - breakpoints[lo])
+    return 0.25
+
+
+@app.route("/api/math/available-dates")
+def api_math_available_dates():
+    """Return distinct target dates that have data for the city/date selectors."""
+    try:
+        city = request.args.get("city")
+        conn = get_db()
+        cur = conn.cursor()
+
+        if city:
+            cur.execute(
+                "SELECT DISTINCT target_date FROM signals WHERE city = ? "
+                "UNION SELECT DISTINCT target_date FROM kalshi_markets "
+                "WHERE status IN ('open','active','closed','settled') AND city = ? "
+                "ORDER BY target_date DESC LIMIT 30",
+                (city, city),
+            )
+        else:
+            cur.execute(
+                "SELECT DISTINCT target_date FROM signals "
+                "UNION SELECT DISTINCT target_date FROM kalshi_markets "
+                "WHERE status IN ('open','active','closed','settled') "
+                "ORDER BY target_date DESC LIMIT 30"
+            )
+
+        dates = [r["target_date"] for r in cur.fetchall() if r["target_date"]]
+        cities_row = cur.execute(
+            "SELECT DISTINCT city FROM kalshi_markets ORDER BY city"
+        ).fetchall()
+        cities = [r["city"] for r in cities_row]
+        conn.close()
+        return jsonify({"dates": dates, "cities": cities})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/math/raw-data")
+def api_math_raw_data():
+    """Return raw forecast data (ensemble members, HRRR, NWS) for a city+date."""
+    city = request.args.get("city")
+    target_date = request.args.get("target_date")
+    if not city or not target_date:
+        return jsonify({"error": "city and target_date required"}), 400
+
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+
+        # Ensemble: get member daily maxes for the latest model run
+        ens_data = None
+        cur.execute(
+            "SELECT model_run_time, member, temperature_f FROM ensemble_forecasts "
+            "WHERE city = ? AND DATE(valid_time) = ? "
+            "ORDER BY model_run_time DESC, member ASC",
+            (city, target_date),
+        )
+        ens_rows = cur.fetchall()
+        if ens_rows:
+            # Group by model_run_time, take latest
+            latest_run = ens_rows[0]["model_run_time"]
+            member_temps = [
+                r["temperature_f"] for r in ens_rows
+                if r["model_run_time"] == latest_run
+            ]
+            if member_temps:
+                import statistics
+                ens_data = {
+                    "model_run_time": latest_run,
+                    "member_maxes": member_temps,
+                    "member_count": len(member_temps),
+                    "mean": round(statistics.mean(member_temps), 1),
+                    "std": round(statistics.stdev(member_temps), 1) if len(member_temps) > 1 else 0,
+                    "min": round(min(member_temps), 1),
+                    "max": round(max(member_temps), 1),
+                    "median": round(statistics.median(member_temps), 1),
+                }
+
+        # HRRR
+        hrrr_data = None
+        cur.execute(
+            "SELECT model_run_time, temperature_f, fetched_at FROM hrrr_forecasts "
+            "WHERE city = ? AND DATE(valid_time) = ? "
+            "ORDER BY model_run_time DESC LIMIT 1",
+            (city, target_date),
+        )
+        hr = cur.fetchone()
+        if hr:
+            hrrr_data = {
+                "daily_max_f": hr["temperature_f"],
+                "model_run_time": hr["model_run_time"],
+                "fetched_at": hr["fetched_at"],
+            }
+
+        # NWS
+        nws_data = None
+        cur.execute(
+            "SELECT high_f, low_f, fetched_at FROM nws_forecasts "
+            "WHERE city = ? AND forecast_date = ? "
+            "ORDER BY fetched_at DESC LIMIT 1",
+            (city, target_date),
+        )
+        nw = cur.fetchone()
+        if nw:
+            nws_data = {
+                "high_f": nw["high_f"],
+                "low_f": nw["low_f"],
+                "fetched_at": nw["fetched_at"],
+            }
+
+        conn.close()
+        return jsonify({
+            "city": city,
+            "target_date": target_date,
+            "ensemble": ens_data,
+            "hrrr": hrrr_data,
+            "nws": nws_data,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/math/probability-pipeline")
+def api_math_probability_pipeline():
+    """Return full probability pipeline data for each market in a city+date."""
+    city = request.args.get("city")
+    target_date = request.args.get("target_date")
+    if not city or not target_date:
+        return jsonify({"error": "city and target_date required"}), 400
+
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+
+        # Get latest signals per market
+        cur.execute(
+            "SELECT s.*, m.threshold_f, m.bracket_low, m.bracket_high, "
+            "m.is_above_contract, m.yes_price AS mkt_price, m.volume "
+            "FROM signals s "
+            "JOIN kalshi_markets m ON s.market_ticker = m.market_ticker "
+            "WHERE s.city = ? AND s.target_date = ? "
+            "ORDER BY s.computed_at DESC",
+            (city, target_date),
+        )
+        rows = cur.fetchall()
+
+        # Deduplicate: keep latest computed_at per market_ticker
+        seen = set()
+        markets = []
+        lead_hours = None
+        for r in rows:
+            ticker = r["market_ticker"]
+            if ticker in seen:
+                continue
+            seen.add(ticker)
+            lh = r["lead_hours"] or 0
+            if lead_hours is None:
+                lead_hours = lh
+            abs_edge = r["abs_edge"] or abs(r["raw_edge"] or 0)
+            edge = r["raw_edge"] or 0
+            is_tradeable = abs_edge >= 0.08  # edge_threshold
+            side = "yes" if edge > 0 else "no"
+            confidence = "high" if abs_edge > 0.20 else ("medium" if abs_edge > 0.12 else "low")
+
+            # Short label for chart
+            is_above = r["is_above_contract"]
+            thresh = r["threshold_f"]
+            blo = r["bracket_low"]
+            bhi = r["bracket_high"]
+            if is_above and thresh is not None:
+                short_label = f"T{int(thresh)}"
+            elif blo is not None and bhi is not None:
+                short_label = f"B{blo}-{bhi}"
+            elif bhi is not None:
+                short_label = f"≤{int(bhi)}"
+            else:
+                short_label = ticker.split("-")[-1] if "-" in ticker else ticker
+
+            markets.append({
+                "market_ticker": ticker,
+                "short_label": short_label,
+                "threshold_f": thresh,
+                "bracket_low": blo,
+                "bracket_high": bhi,
+                "is_above": bool(is_above),
+                "ensemble_prob": r["ensemble_prob"],
+                "hrrr_prob": r["hrrr_prob"],
+                "nws_prob": r["nws_prob"],
+                "blended_prob": r["blended_prob"],
+                "calibrated_prob": r["calibrated_prob"],
+                "market_yes_price": r["market_yes_price"],
+                "raw_edge": edge,
+                "abs_edge": abs_edge,
+                "lead_hours": lh,
+                "is_tradeable": is_tradeable,
+                "side": side,
+                "confidence": confidence,
+                "volume": r["volume"],
+            })
+
+        # Compute blending weights based on lead hours
+        lh = lead_hours or 20
+        hrrr_adj = _interpolate_hrrr_weight(lh)
+        weights = {
+            "gfs_ensemble": {"base": 0.60, "adjusted": 0.60},
+            "hrrr": {"base": 0.25, "adjusted": round(hrrr_adj, 3)},
+            "nws": {"base": 0.15, "adjusted": 0.15},
+        }
+
+        conn.close()
+        return jsonify({
+            "city": city,
+            "target_date": target_date,
+            "lead_hours": lh,
+            "weights": weights,
+            "markets": sorted(markets, key=lambda m: m["threshold_f"] or m["bracket_low"] or 0),
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/math/kelly-sizing")
+def api_math_kelly_sizing():
+    """Return Kelly sizing breakdown and risk check status for a city+date."""
+    city = request.args.get("city")
+    target_date = request.args.get("target_date")
+    if not city or not target_date:
+        return jsonify({"error": "city and target_date required"}), 400
+
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+
+        # Get trades for this city+date
+        cur.execute(
+            "SELECT * FROM trades WHERE city = ? AND target_date = ? ORDER BY market_ticker",
+            (city, target_date),
+        )
+        trade_rows = cur.fetchall()
+
+        trades = []
+        for t in trade_rows:
+            price = t["price"] or 0
+            side = t["side"] or "yes"
+            model_prob = t["model_prob"] or 0
+            p_win = model_prob if side == "yes" else (1 - model_prob)
+            q_lose = 1 - p_win
+
+            if side == "yes":
+                odds_b = ((1 - price) / price) if price > 0 else 0
+            else:
+                no_price = 1 - price if price < 1 else 0
+                odds_b = (price / no_price) if no_price > 0 else 0
+
+            full_kelly = ((p_win * odds_b - q_lose) / odds_b) if odds_b > 0 else 0
+            full_kelly = max(0, full_kelly)
+            fractional = full_kelly * 0.15
+
+            contracts = t["contracts"] or 0
+            total_cost = t["total_cost"] or 0
+
+            # EV per contract
+            if side == "yes":
+                ev = p_win * (1 - price) - q_lose * price
+            else:
+                no_price = 1 - price
+                ev = p_win * price - q_lose * no_price
+
+            trades.append({
+                "market_ticker": t["market_ticker"],
+                "side": side,
+                "direction": t["direction"] or "buy",
+                "model_prob": round(model_prob, 4),
+                "market_price": round(price, 4),
+                "edge": round(t["edge"] or 0, 4),
+                "p_win": round(p_win, 4),
+                "odds_b": round(odds_b, 3),
+                "full_kelly": round(full_kelly, 4),
+                "fractional_kelly": round(fractional, 4),
+                "contracts": contracts,
+                "price": round(price, 4),
+                "total_cost": round(total_cost, 2),
+                "ev_per_contract": round(ev, 4),
+                "status": t["status"],
+            })
+
+        # Portfolio risk state
+        cur.execute(
+            "SELECT COUNT(*) AS cnt FROM trades WHERE status = 'filled' AND pnl IS NULL"
+        )
+        open_positions = cur.fetchone()["cnt"]
+
+        cur.execute(
+            "SELECT COUNT(*) AS cnt FROM trades WHERE status = 'filled' "
+            "AND pnl IS NULL AND city = ?", (city,)
+        )
+        city_positions = cur.fetchone()["cnt"]
+
+        cur.execute(
+            "SELECT COUNT(*) AS cnt FROM trades WHERE status = 'filled' "
+            "AND pnl IS NULL AND target_date = ?", (target_date,)
+        )
+        date_positions = cur.fetchone()["cnt"]
+
+        cur.execute(
+            "SELECT COALESCE(SUM(pnl), 0) AS total FROM trades "
+            "WHERE DATE(created_at) = DATE('now') AND pnl IS NOT NULL"
+        )
+        daily_pnl = cur.fetchone()["total"]
+
+        # Current bankroll
+        cur.execute("SELECT COALESCE(SUM(total_cost), 0) AS spent FROM trades WHERE status='filled' AND pnl IS NULL")
+        open_cost = cur.fetchone()["spent"]
+        cur.execute("SELECT COALESCE(SUM(pnl), 0) AS realized FROM trades WHERE pnl IS NOT NULL")
+        realized = cur.fetchone()["realized"]
+        bankroll = round(INITIAL_BANKROLL + realized - open_cost, 2)
+
+        risk_checks = {
+            "daily_loss_limit": {"current": round(daily_pnl, 2), "limit": 300, "ok": daily_pnl > -300},
+            "concurrent_positions": {"current": open_positions, "limit": 20, "ok": open_positions < 20},
+            "city_positions": {"current": city_positions, "limit": 6, "ok": city_positions < 6},
+            "date_positions": {"current": date_positions, "limit": 4, "ok": date_positions < 4},
+            "bankroll": {"available": bankroll, "required": sum(t["total_cost"] for t in trades), "ok": True},
+        }
+
+        conn.close()
+        return jsonify({
+            "city": city,
+            "target_date": target_date,
+            "bankroll": bankroll,
+            "trades": trades,
+            "risk_checks": risk_checks,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/math/calibration-curve")
+def api_math_calibration_curve():
+    """Return reliability diagram data from backtest trades."""
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+
+        # Try to get calibration data from the latest backtest run
+        cur.execute(
+            "SELECT trades_json FROM backtest_runs ORDER BY created_at DESC LIMIT 1"
+        )
+        row = cur.fetchone()
+        conn.close()
+
+        if not row or not row["trades_json"]:
+            return jsonify({"bins": [], "total_samples": 0, "source": "none"})
+
+        bt_trades = json.loads(row["trades_json"])
+
+        # Extract (forecast_prob, outcome) pairs
+        pairs = []
+        for t in bt_trades:
+            prob = t.get("model_prob") or t.get("forecast_prob")
+            pnl = t.get("pnl")
+            side = t.get("side", "yes")
+            if prob is None or pnl is None:
+                continue
+            # Outcome: did the YES side win?
+            if side == "yes":
+                outcome = 1 if pnl > 0 else 0
+            else:
+                outcome = 0 if pnl > 0 else 1
+            pairs.append((prob, outcome))
+
+        if not pairs:
+            return jsonify({"bins": [], "total_samples": 0, "source": "backtest"})
+
+        # Bin into deciles
+        bins = []
+        for i in range(10):
+            lo = i * 0.1
+            hi = (i + 1) * 0.1
+            in_bin = [(p, o) for p, o in pairs if lo <= p < hi]
+            if i == 9:
+                in_bin = [(p, o) for p, o in pairs if lo <= p <= hi]
+            if in_bin:
+                avg_f = sum(p for p, _ in in_bin) / len(in_bin)
+                obs_f = sum(o for _, o in in_bin) / len(in_bin)
+                bins.append({
+                    "bin_start": round(lo, 1),
+                    "bin_end": round(hi, 1),
+                    "count": len(in_bin),
+                    "avg_forecast": round(avg_f, 4),
+                    "observed_freq": round(obs_f, 4),
+                })
+            else:
+                bins.append({
+                    "bin_start": round(lo, 1),
+                    "bin_end": round(hi, 1),
+                    "count": 0,
+                    "avg_forecast": round(lo + 0.05, 2),
+                    "observed_freq": None,
+                })
+
+        # Brier score decomposition
+        n = len(pairs)
+        base_rate = sum(o for _, o in pairs) / n
+        brier = sum((p - o) ** 2 for p, o in pairs) / n
+        uncertainty = base_rate * (1 - base_rate)
+
+        # Reliability and resolution from bins
+        reliability = 0
+        resolution = 0
+        for b in bins:
+            if b["count"] == 0 or b["observed_freq"] is None:
+                continue
+            nk = b["count"]
+            fk = b["avg_forecast"]
+            ok = b["observed_freq"]
+            reliability += nk * (fk - ok) ** 2
+            resolution += nk * (ok - base_rate) ** 2
+        reliability /= n
+        resolution /= n
+
+        return jsonify({
+            "bins": bins,
+            "total_samples": n,
+            "brier_score": round(brier, 4),
+            "reliability": round(reliability, 4),
+            "resolution": round(resolution, 4),
+            "uncertainty": round(uncertainty, 4),
+            "base_rate": round(base_rate, 4),
+            "source": "backtest",
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/math/observation-histogram")
+def api_math_observation_histogram():
+    """Return historical temperature distribution for a city+month."""
+    city = request.args.get("city")
+    month = request.args.get("month", type=int)
+    if not city:
+        return jsonify({"error": "city required"}), 400
+
+    try:
+        conn = get_db()
+        cur = conn.cursor()
+
+        if month:
+            cur.execute(
+                "SELECT high_f FROM observations WHERE city = ? "
+                "AND CAST(SUBSTR(date, 6, 2) AS INTEGER) = ? "
+                "AND high_f IS NOT NULL ORDER BY date",
+                (city, month),
+            )
+        else:
+            cur.execute(
+                "SELECT high_f FROM observations WHERE city = ? "
+                "AND high_f IS NOT NULL ORDER BY date",
+                (city,),
+            )
+
+        rows = cur.fetchall()
+        conn.close()
+
+        if not rows:
+            return jsonify({"city": city, "month": month, "bins": [], "sample_count": 0})
+
+        temps = [r["high_f"] for r in rows]
+        import statistics
+
+        t_min = int(min(temps))
+        t_max = int(max(temps)) + 1
+        # Create 2-degree bins
+        bin_width = 2
+        bin_start = (t_min // bin_width) * bin_width
+        bin_end = ((t_max // bin_width) + 1) * bin_width
+
+        bins = []
+        for lo in range(bin_start, bin_end, bin_width):
+            hi = lo + bin_width
+            count = sum(1 for t in temps if lo <= t < hi)
+            if lo + bin_width >= bin_end:
+                count = sum(1 for t in temps if lo <= t <= hi)
+            bins.append({"temp_low": lo, "temp_high": hi, "count": count})
+
+        return jsonify({
+            "city": city,
+            "month": month,
+            "sample_count": len(temps),
+            "bins": bins,
+            "mean": round(statistics.mean(temps), 1),
+            "std": round(statistics.stdev(temps), 1) if len(temps) > 1 else 0,
+            "min": int(min(temps)),
+            "max": int(max(temps)),
+            "median": round(statistics.median(temps), 1),
+        })
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

@@ -205,6 +205,7 @@ class KalshiMarketDiscovery:
                         volume=pm.volume,
                         close_time=pm.close_time,
                         status=pm.status,
+                        first_discovered_at=now,
                         last_updated=now,
                     )
                     session.add(row)

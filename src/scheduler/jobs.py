@@ -6,18 +6,21 @@ Each job corresponds to a step in the bot's operational cycle.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, date, timezone
+from datetime import datetime, date, timedelta, timezone
+from pathlib import Path
+
 from src.utils.time_utils import compute_lead_hours, parse_iso_datetime
 
 from src.config.cities import CityConfig, load_cities
 from src.config.settings import AppSettings, load_settings
 from src.data.db import init_db, get_session
-from src.data.ensemble_fetcher import EnsembleFetcher
+from src.data.ensemble_fetcher import EnsembleFetcher, EnsembleResult
 from src.data.hrrr_fetcher import HRRRFetcher
 from src.data.nws_client import NWSClient
 from src.data.kalshi_client import KalshiClient
 from src.data.kalshi_markets import KalshiMarketDiscovery, ParsedMarket
-from src.data.models import Signal, KalshiMarket
+from src.data.models import Signal, KalshiMarket, EnsembleForecast
+from src.data.freshness import DataFreshnessTracker
 from src.signals.ensemble_probability import EnsembleProbabilityCalculator
 from src.signals.hrrr_correction import HRRRCorrector
 from src.signals.model_blender import ModelBlender
@@ -77,6 +80,10 @@ class BotContext:
         self.kalshi_client.close()
 
 
+# ---------------------------------------------------------------------------
+# Data fetching jobs (kept for use by smart_data_fetch)
+# ---------------------------------------------------------------------------
+
 def fetch_all_ensembles(ctx: BotContext):
     """Fetch GFS ensemble data for all cities."""
     for city_name, city_config in ctx.cities.items():
@@ -105,6 +112,74 @@ def fetch_all_nws(ctx: BotContext):
             logger.error(f"NWS fetch failed for {city_name}: {e}")
 
 
+# ---------------------------------------------------------------------------
+# Smart data fetch — replaces fixed-interval fetch jobs
+# ---------------------------------------------------------------------------
+
+def _check_manual_refresh_signals(ctx: BotContext) -> set[str]:
+    """Check for manual refresh signal files from the dashboard.
+
+    Returns set of sources that need manual refresh (e.g. {'gfs', 'hrrr'}).
+    """
+    signal_dir = Path(ctx.settings.database.absolute_path).parent / "signals"
+    triggered: set[str] = set()
+    for source in ["gfs", "hrrr", "nws"]:
+        signal_file = signal_dir / f"refresh_{source}.signal"
+        if signal_file.exists():
+            try:
+                signal_file.unlink()
+                triggered.add(source)
+                logger.info(f"Manual refresh triggered for {source}")
+            except Exception as e:
+                logger.warning(f"Could not consume signal file for {source}: {e}")
+    return triggered
+
+
+def smart_data_fetch(ctx: BotContext):
+    """Check freshness of each data source and fetch only when new data exists.
+
+    Replaces the old fixed-interval fetch_all_ensembles/hrrr/nws jobs.
+    Runs every ~10 minutes and only fetches when model-run-aware logic
+    determines new data should be available.
+    """
+    tracker = DataFreshnessTracker(
+        ctx.settings.database.absolute_path,
+        gfs_lag_hours=ctx.settings.scheduler.gfs_availability_lag_hours,
+        hrrr_lag_hours=ctx.settings.scheduler.hrrr_availability_lag_hours,
+    )
+
+    # Check for manual refresh signals from dashboard
+    manual = _check_manual_refresh_signals(ctx)
+
+    # GFS Ensemble
+    if "gfs" in manual or tracker.should_fetch_gfs():
+        reason = "manual refresh" if "gfs" in manual else "new GFS run available"
+        logger.info(f"Fetching GFS ensemble ({reason})")
+        fetch_all_ensembles(ctx)
+    else:
+        logger.debug("GFS ensemble data is fresh — skipping fetch")
+
+    # HRRR
+    if "hrrr" in manual or tracker.should_fetch_hrrr():
+        reason = "manual refresh" if "hrrr" in manual else "new HRRR run available"
+        logger.info(f"Fetching HRRR ({reason})")
+        fetch_all_hrrr(ctx)
+    else:
+        logger.debug("HRRR data is fresh — skipping fetch")
+
+    # NWS
+    if "nws" in manual or tracker.should_fetch_nws():
+        reason = "manual refresh" if "nws" in manual else "NWS data stale"
+        logger.info(f"Fetching NWS ({reason})")
+        fetch_all_nws(ctx)
+    else:
+        logger.debug("NWS data is fresh — skipping fetch")
+
+
+# ---------------------------------------------------------------------------
+# Market discovery
+# ---------------------------------------------------------------------------
+
 def discover_markets(ctx: BotContext):
     """Discover active KXHIGH markets."""
     try:
@@ -116,6 +191,136 @@ def discover_markets(ctx: BotContext):
         logger.error(f"Market discovery failed: {e}")
         ctx.alerts.warning(f"Market discovery failed: {e}", "kalshi")
 
+
+# ---------------------------------------------------------------------------
+# Price discovery scan — fast-poll recently discovered markets
+# ---------------------------------------------------------------------------
+
+def price_discovery_scan(ctx: BotContext):
+    """Fast-poll markets discovered in the last N hours (price discovery window).
+
+    New contracts have inefficient prices. Poll more frequently during
+    the window to capture large edges before the market stabilizes.
+    """
+    window_hours = ctx.settings.scheduler.price_discovery_window_hours
+
+    session = get_session()
+    try:
+        cutoff = (datetime.now(timezone.utc) - timedelta(hours=window_hours)).isoformat()
+        new_markets = (
+            session.query(KalshiMarket)
+            .filter(
+                KalshiMarket.first_discovered_at >= cutoff,
+                KalshiMarket.status == "open",
+            )
+            .all()
+        )
+    except Exception as e:
+        logger.debug(f"Price discovery query failed (table may not have column yet): {e}")
+        session.close()
+        return
+    finally:
+        session.close()
+
+    if not new_markets:
+        return
+
+    logger.info(f"Price discovery: {len(new_markets)} markets in window")
+
+    # Convert DB rows to ParsedMarket for the trading pipeline
+    discovery_markets: list[ParsedMarket] = []
+    for km in new_markets:
+        discovery_markets.append(ParsedMarket(
+            market_ticker=km.market_ticker,
+            event_ticker=km.event_ticker,
+            city=km.city,
+            target_date=km.target_date,
+            bracket_low=km.bracket_low,
+            bracket_high=km.bracket_high,
+            is_above_contract=bool(km.is_above_contract),
+            threshold_f=km.threshold_f,
+            yes_price=km.yes_price or 0.0,
+            no_price=km.no_price or 0.0,
+            volume=km.volume or 0,
+            close_time=km.close_time,
+            status=km.status or "open",
+        ))
+
+    # Refresh prices for these markets
+    discovery_markets = ctx.market_discovery.refresh_prices(discovery_markets)
+
+    # Run the standard trading logic scoped to just these markets
+    _run_trading_cycle(ctx, discovery_markets, tag="price_discovery")
+
+
+# ---------------------------------------------------------------------------
+# DB cache helper — reads ensemble data without HTTP calls
+# ---------------------------------------------------------------------------
+
+def _load_ensemble_from_db(city_name: str, target_date: str) -> EnsembleResult | None:
+    """Load the latest ensemble data for a city+date from the DB.
+
+    Reads from the ensemble_forecasts table — NO HTTP calls.
+    Returns an EnsembleResult or None if no data available.
+    """
+    session = get_session()
+    try:
+        # Find the latest model_run_time for this city
+        from sqlalchemy import func
+        latest_run = (
+            session.query(func.max(EnsembleForecast.model_run_time))
+            .filter(EnsembleForecast.city == city_name)
+            .scalar()
+        )
+        if not latest_run:
+            return None
+
+        # Get all member data for this run + target_date
+        rows = (
+            session.query(EnsembleForecast)
+            .filter(
+                EnsembleForecast.city == city_name,
+                EnsembleForecast.model_run_time == latest_run,
+                EnsembleForecast.valid_time == target_date,
+            )
+            .order_by(EnsembleForecast.member)
+            .all()
+        )
+
+        if not rows:
+            return None
+
+        # Build member_daily_maxes (31 values, NaN for missing)
+        member_maxes = [float("nan")] * 31
+        for row in rows:
+            if 0 <= row.member < 31:
+                member_maxes[row.member] = row.temperature_f
+
+        valid_count = sum(1 for t in member_maxes if t == t)  # NaN != NaN
+        if valid_count < 20:
+            logger.warning(
+                f"Only {valid_count} members in DB for {city_name} on {target_date}"
+            )
+            return None
+
+        return EnsembleResult(
+            city=city_name,
+            model_run_time=latest_run,
+            target_date=target_date,
+            member_daily_maxes=member_maxes,
+            member_hourly={},  # Not needed for probability calc
+            valid_times=[],
+        )
+    except Exception as e:
+        logger.warning(f"Failed to load ensemble from DB for {city_name}/{target_date}: {e}")
+        return None
+    finally:
+        session.close()
+
+
+# ---------------------------------------------------------------------------
+# Active strategy loader
+# ---------------------------------------------------------------------------
 
 def _load_active_strategy(ctx: BotContext) -> int | None:
     """Load active strategy from DB and override strategy config.
@@ -167,44 +372,87 @@ def _load_active_strategy(ctx: BotContext) -> int | None:
         return None
 
 
-def scan_and_trade(ctx: BotContext):
-    """Core trading cycle: signal -> edge -> size -> trade."""
-    if not ctx._active_markets:
-        discover_markets(ctx)
+# ---------------------------------------------------------------------------
+# Core trading cycle
+# ---------------------------------------------------------------------------
 
-    if not ctx._active_markets:
-        logger.info("No active markets to trade")
-        return
+def _store_all_signals(
+    signals: dict[str, float],
+    market_data: dict[str, dict],
+    probs: dict,
+    city_name: str,
+    target_date: str,
+    lead_hours: float,
+    now: str,
+):
+    """Store ALL computed signals for edge tracking (not just traded ones)."""
+    session = get_session()
+    try:
+        for ticker, calibrated_prob in signals.items():
+            market_info = market_data.get(ticker)
+            prob_result = probs.get(ticker)
+            if not market_info or not prob_result:
+                continue
 
+            yes_price = market_info["yes_price"]
+            raw_edge = calibrated_prob - yes_price
+
+            sig = Signal(
+                city=city_name,
+                target_date=target_date,
+                market_ticker=ticker,
+                computed_at=now,
+                ensemble_prob=prob_result.probability,
+                calibrated_prob=calibrated_prob,
+                market_yes_price=yes_price,
+                raw_edge=raw_edge,
+                abs_edge=abs(raw_edge),
+                lead_hours=lead_hours,
+            )
+            session.add(sig)
+        session.commit()
+    except Exception as e:
+        session.rollback()
+        logger.debug(f"Signal storage error (possible duplicate): {e}")
+    finally:
+        session.close()
+
+
+def _run_trading_cycle(
+    ctx: BotContext,
+    markets: list[ParsedMarket],
+    tag: str = "scan",
+):
+    """Shared trading logic used by both scan_and_trade and price_discovery_scan.
+
+    1. Group markets by city+date
+    2. Load ensemble from DB (NO live HTTP)
+    3. Compute probabilities + edges
+    4. Store ALL signals for edge tracking
+    5. Execute trades where edge is sufficient
+    """
     # Load active strategy (if any) to override config
     active_strategy_id = _load_active_strategy(ctx)
 
-    # Refresh market prices
-    ctx._active_markets = ctx.market_discovery.refresh_prices(ctx._active_markets)
-
     # Group markets by city and target date
     by_city_date: dict[tuple[str, str], list[ParsedMarket]] = {}
-    for m in ctx._active_markets:
+    for m in markets:
         key = (m.city, m.target_date)
         by_city_date.setdefault(key, []).append(m)
 
     # Get portfolio state
     portfolio = ctx.risk_manager.get_portfolio_state(ctx.paper_trader.bankroll)
 
-    for (city_name, target_date), markets in by_city_date.items():
+    for (city_name, target_date), city_markets in by_city_date.items():
         city_config = ctx.cities.get(city_name)
         if city_config is None:
             continue
 
-        # Get latest ensemble data
-        ensemble_results = ctx.ensemble_fetcher.fetch_ensemble(city_config, forecast_days=3)
-        target_ensemble = None
-        for er in ensemble_results:
-            if er.target_date == target_date:
-                target_ensemble = er
-                break
+        # Load ensemble from DB cache (NO live HTTP call)
+        target_ensemble = _load_ensemble_from_db(city_name, target_date)
 
         if target_ensemble is None:
+            logger.debug(f"[{tag}] No ensemble data in DB for {city_name}/{target_date}")
             continue
 
         # Compute actual lead hours
@@ -214,14 +462,14 @@ def scan_and_trade(ctx: BotContext):
 
         # Calculate ensemble probabilities
         probs = ctx.ensemble_calc.get_full_distribution(
-            target_ensemble.member_daily_maxes, markets
+            target_ensemble.member_daily_maxes, city_markets
         )
 
         # Build signal dict and market dict for edge detection
         signals: dict[str, float] = {}
         market_data: dict[str, dict] = {}
 
-        for m in markets:
+        for m in city_markets:
             prob_result = probs.get(m.market_ticker)
             if prob_result is None:
                 continue
@@ -235,11 +483,15 @@ def scan_and_trade(ctx: BotContext):
                 "target_date": m.target_date,
             }
 
+        now = datetime.now(timezone.utc).isoformat()
+
+        # Store ALL signals for edge tracking (Phase 3 requirement)
+        _store_all_signals(signals, market_data, probs, city_name, target_date, lead_hours, now)
+
         # Detect edges
         trade_signals = ctx.edge_detector.scan_for_edges(signals, market_data, lead_hours=lead_hours)
 
         # Execute trades
-        now = datetime.now(timezone.utc).isoformat()
         for signal in trade_signals:
             # Check risk
             size = ctx.kelly_sizer.calculate_position_size(signal, portfolio.bankroll)
@@ -250,7 +502,7 @@ def scan_and_trade(ctx: BotContext):
                 signal.city, signal.target_date, size.total_cost, portfolio
             )
             if not risk_check.allowed:
-                logger.info(f"Risk blocked: {risk_check.reason}")
+                logger.info(f"[{tag}] Risk blocked: {risk_check.reason}")
                 continue
 
             # Execute
@@ -258,25 +510,27 @@ def scan_and_trade(ctx: BotContext):
             if trade:
                 portfolio.open_positions += 1
                 portfolio.bankroll -= size.total_cost
+                logger.info(
+                    f"[{tag}] Trade executed: {signal.market_ticker} "
+                    f"edge={signal.edge:.3f} contracts={size.contracts}"
+                )
 
-                # Store signal
-                session = get_session()
-                try:
-                    sig = Signal(
-                        city=signal.city,
-                        target_date=signal.target_date,
-                        market_ticker=signal.market_ticker,
-                        computed_at=now,
-                        ensemble_prob=probs[signal.market_ticker].probability,
-                        calibrated_prob=signals[signal.market_ticker],
-                        market_yes_price=signal.market_price,
-                        raw_edge=signal.edge,
-                        abs_edge=signal.abs_edge,
-                        lead_hours=signal.lead_hours,
-                    )
-                    session.add(sig)
-                    session.commit()
-                except Exception:
-                    session.rollback()
-                finally:
-                    session.close()
+
+def scan_and_trade(ctx: BotContext):
+    """Core trading cycle: signal -> edge -> size -> trade.
+
+    Runs every 5 minutes. Reads ensemble data from DB cache
+    (NOT live HTTP) so this is cheap to run frequently.
+    """
+    if not ctx._active_markets:
+        discover_markets(ctx)
+
+    if not ctx._active_markets:
+        logger.info("No active markets to trade")
+        return
+
+    # Refresh market prices (this IS an API call, but lightweight)
+    ctx._active_markets = ctx.market_discovery.refresh_prices(ctx._active_markets)
+
+    # Run the shared trading cycle
+    _run_trading_cycle(ctx, ctx._active_markets, tag="scan")

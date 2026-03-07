@@ -6,6 +6,7 @@
 <title>AetherBot Dashboard</title>
 <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>%E2%9A%A1</text></svg>">
 <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns"></script>
 <style>
   *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
 
@@ -368,6 +369,87 @@
     margin-top:12px;
   }
 
+  /* ---------- Control Panel ---------- */
+  .control-panel{
+    background:var(--bg-card);
+    border:1px solid var(--border);
+    border-radius:var(--radius);
+    padding:12px 16px;
+    margin-bottom:16px;
+    box-shadow:var(--shadow);
+    display:grid;
+    grid-template-columns:1fr 1fr;
+    gap:12px;
+  }
+  @media(max-width:767px){
+    .control-panel{grid-template-columns:1fr}
+  }
+  .cp-section-title{
+    font-size:.7rem;
+    font-weight:600;
+    text-transform:uppercase;
+    letter-spacing:.06em;
+    color:var(--text-secondary);
+    margin-bottom:6px;
+  }
+  .cp-row{
+    display:flex;
+    align-items:center;
+    gap:8px;
+    margin-bottom:4px;
+    font-size:.8rem;
+  }
+  .freshness-dot{
+    width:8px;height:8px;
+    border-radius:50%;
+    display:inline-block;
+    flex-shrink:0;
+  }
+  .freshness-dot.green{background:var(--green);box-shadow:0 0 4px var(--green)}
+  .freshness-dot.yellow{background:var(--yellow);box-shadow:0 0 4px var(--yellow)}
+  .freshness-dot.red{background:var(--red);box-shadow:0 0 4px var(--red)}
+  .freshness-dot.dim{background:#555;box-shadow:none}
+  .cp-source-name{
+    color:var(--text-primary);
+    font-weight:500;
+    min-width:90px;
+  }
+  .cp-staleness{
+    color:var(--text-secondary);
+    min-width:70px;
+  }
+  .btn-refresh{
+    background:none;
+    border:1px solid var(--border);
+    border-radius:4px;
+    color:var(--text-secondary);
+    cursor:pointer;
+    font-size:.75rem;
+    padding:1px 6px;
+    transition:all 0.2s;
+  }
+  .btn-refresh:hover{
+    border-color:var(--accent);
+    color:var(--accent);
+  }
+  .btn-refresh.refreshing{
+    animation:spin 1s linear infinite;
+    pointer-events:none;
+  }
+  @keyframes spin{
+    from{transform:rotate(0deg)}
+    to{transform:rotate(360deg)}
+  }
+  .cp-stat{
+    display:flex;
+    align-items:center;
+    gap:6px;
+    margin-bottom:4px;
+    font-size:.8rem;
+  }
+  .cp-stat-label{color:var(--text-secondary)}
+  .cp-stat-value{color:var(--text-primary);font-weight:500}
+
   /* ---------- Loading shimmer ---------- */
   .shimmer{
     background:linear-gradient(90deg,var(--bg-card) 25%,var(--bg-card-alt) 50%,var(--bg-card) 75%);
@@ -394,6 +476,7 @@
     <div class="header-right">
       <a href="/whitepaper" class="header-link">Whitepaper</a>
       <a href="/strategy-lab" class="header-link">Strategy Lab</a>
+      <a href="/math" class="header-link">Math</a>
       <div class="reset-dropdown" id="reset-dropdown">
         <button class="btn-reset" onclick="toggleResetMenu(event)">Reset Trades</button>
         <div class="reset-menu" id="reset-menu">
@@ -405,6 +488,46 @@
       <span><span class="status-dot" id="status-dot"></span></span>
     </div>
   </header>
+
+  <!-- ===== Control Panel ===== -->
+  <div class="control-panel" id="control-panel">
+    <div class="cp-left">
+      <div class="cp-section-title">Data Sources</div>
+      <div class="cp-row" id="cp-gfs">
+        <span class="freshness-dot" id="fd-gfs"></span>
+        <span class="cp-source-name">GFS Ensemble</span>
+        <span class="cp-staleness" id="fs-gfs">--</span>
+        <button class="btn-refresh" onclick="manualRefresh('gfs',this)" title="Force refresh">&#8635;</button>
+      </div>
+      <div class="cp-row" id="cp-hrrr">
+        <span class="freshness-dot" id="fd-hrrr"></span>
+        <span class="cp-source-name">HRRR</span>
+        <span class="cp-staleness" id="fs-hrrr">--</span>
+        <button class="btn-refresh" onclick="manualRefresh('hrrr',this)" title="Force refresh">&#8635;</button>
+      </div>
+      <div class="cp-row" id="cp-nws">
+        <span class="freshness-dot" id="fd-nws"></span>
+        <span class="cp-source-name">NWS</span>
+        <span class="cp-staleness" id="fs-nws">--</span>
+        <button class="btn-refresh" onclick="manualRefresh('nws',this)" title="Force refresh">&#8635;</button>
+      </div>
+    </div>
+    <div class="cp-right">
+      <div class="cp-section-title">Markets</div>
+      <div class="cp-stat">
+        <span class="cp-stat-label">Active contracts:</span>
+        <span class="cp-stat-value" id="cp-total-markets">--</span>
+      </div>
+      <div class="cp-stat">
+        <span class="cp-stat-label">In price discovery:</span>
+        <span class="cp-stat-value" id="cp-price-discovery">--</span>
+      </div>
+      <div class="cp-stat">
+        <span class="cp-stat-label">Last scan:</span>
+        <span class="cp-stat-value" id="cp-last-scan">--</span>
+      </div>
+    </div>
+  </div>
 
   <!-- ===== Key Metrics ===== -->
   <div class="section-title">Key Metrics</div>
@@ -440,6 +563,18 @@
   <div class="card">
     <div class="chart-wrap">
       <canvas id="pnl-chart"></canvas>
+    </div>
+  </div>
+
+  <!-- ===== Edge Trajectory ===== -->
+  <div class="section-title">Edge Trajectory</div>
+  <div class="card">
+    <div class="card-header">
+      <span class="card-title">Position Edge Over Time</span>
+      <span class="card-badge" id="edge-chart-badge" style="background:var(--blue-badge);color:var(--text-primary);font-size:.65rem">Live</span>
+    </div>
+    <div class="chart-wrap">
+      <canvas id="edge-chart"></canvas>
     </div>
   </div>
 
@@ -976,12 +1111,238 @@ async function confirmReset() {
 }
 
 // ---------------------------------------------------------------------------
+//  Render: Data Freshness Control Panel
+// ---------------------------------------------------------------------------
+function fmtStaleness(minutes, hasData) {
+  if (hasData === false) return 'No data';
+  if (minutes == null || minutes >= 9999) return 'No data';
+  if (minutes < 1) return '<1m ago';
+  if (minutes < 60) return Math.floor(minutes) + 'm ago';
+  var h = Math.floor(minutes / 60);
+  var m = Math.floor(minutes % 60);
+  return h + 'h ' + m + 'm ago';
+}
+
+async function loadFreshness() {
+  var data = await safeFetch('/api/data-freshness');
+  if (!data) return;
+
+  var sourceMap = { gfs_ensemble: 'gfs', hrrr: 'hrrr', nws: 'nws' };
+
+  if (data.sources) {
+    data.sources.forEach(function(s) {
+      var key = sourceMap[s.source] || s.source;
+      var dot = $('fd-' + key);
+      var stale = $('fs-' + key);
+      if (dot) {
+        if (s.has_data === false) {
+          dot.className = 'freshness-dot dim';
+        } else {
+          dot.className = 'freshness-dot ' + (s.status || 'red');
+        }
+      }
+      if (stale) {
+        stale.textContent = fmtStaleness(s.staleness_minutes, s.has_data);
+      }
+    });
+  }
+
+  if (data.total_markets != null) {
+    $('cp-total-markets').textContent = data.total_markets;
+  }
+  if (data.price_discovery_count != null) {
+    var pdEl = $('cp-price-discovery');
+    pdEl.textContent = data.price_discovery_count;
+    if (data.price_discovery_count > 0) {
+      pdEl.style.color = 'var(--yellow)';
+    } else {
+      pdEl.style.color = '';
+    }
+  }
+  if (data.last_scan_minutes_ago != null) {
+    $('cp-last-scan').textContent = fmtStaleness(data.last_scan_minutes_ago);
+  }
+}
+
+async function manualRefresh(source, btn) {
+  btn.classList.add('refreshing');
+  try {
+    await fetch(API_BASE + '/api/refresh/' + source, { method: 'POST' });
+    // Show feedback for 2 seconds
+    setTimeout(function() {
+      btn.classList.remove('refreshing');
+    }, 2000);
+  } catch (e) {
+    btn.classList.remove('refreshing');
+    console.error('Manual refresh failed:', e);
+  }
+}
+
+// ---------------------------------------------------------------------------
+//  Render: Edge Trajectory Chart
+// ---------------------------------------------------------------------------
+var edgeChart = null;
+
+// Distinct colors for up to 10 tickers
+var EDGE_COLORS = [
+  '#58a6ff', '#3fb950', '#f85149', '#d29922', '#db6d28',
+  '#a371f7', '#39d353', '#f778ba', '#79c0ff', '#d2a8ff'
+];
+
+async function loadEdgeChart() {
+  var data = await safeFetch('/api/signals/edge-history?hours=24');
+  if (!data || !data.tickers || data.tickers.length === 0) {
+    if (!edgeChart) {
+      buildEdgeChart([], []);
+    }
+    $('edge-chart-badge').textContent = '0 series';
+    return;
+  }
+
+  var datasets = [];
+  data.tickers.forEach(function(ticker, idx) {
+    var series = data.series[ticker] || [];
+    var color = EDGE_COLORS[idx % EDGE_COLORS.length];
+
+    // Extract short label from ticker (e.g., KXHIGHNY-26MAR06-T55 -> NY T55)
+    var parts = ticker.split('-');
+    var shortLabel = ticker;
+    if (parts.length >= 3) {
+      var cityPart = parts[0].replace('KXHIGH', '');
+      var tempPart = parts[parts.length - 1];
+      shortLabel = cityPart + ' ' + tempPart;
+    }
+
+    datasets.push({
+      label: shortLabel,
+      data: series.map(function(pt) {
+        return {
+          x: new Date(pt.t),
+          y: pt.edge != null ? Number(pt.edge) * 100 : null
+        };
+      }),
+      borderColor: color,
+      backgroundColor: color + '33',
+      borderWidth: 1.5,
+      pointRadius: 0,
+      pointHitRadius: 6,
+      fill: false,
+      tension: 0.2
+    });
+  });
+
+  $('edge-chart-badge').textContent = datasets.length + ' series';
+
+  if (edgeChart) {
+    edgeChart.data.datasets = datasets;
+    edgeChart.update('none');
+  } else {
+    buildEdgeChart(datasets);
+  }
+}
+
+function buildEdgeChart(datasets) {
+  var ctx = $('edge-chart').getContext('2d');
+
+  edgeChart = new Chart(ctx, {
+    type: 'line',
+    data: { datasets: datasets || [] },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'nearest', intersect: false },
+      plugins: {
+        legend: {
+          display: true,
+          position: 'top',
+          labels: {
+            color: '#8b949e',
+            font: { size: 10 },
+            boxWidth: 12,
+            padding: 8
+          }
+        },
+        tooltip: {
+          backgroundColor: '#1c2128',
+          titleColor: '#e6edf3',
+          bodyColor: '#e6edf3',
+          borderColor: '#30363d',
+          borderWidth: 1,
+          padding: 10,
+          callbacks: {
+            label: function(ctx) {
+              return ctx.dataset.label + ': ' + (ctx.parsed.y != null ? ctx.parsed.y.toFixed(1) + '%' : '--');
+            }
+          }
+        },
+        annotation: {
+          annotations: {
+            thresholdLine: {
+              type: 'line',
+              yMin: 8,
+              yMax: 8,
+              borderColor: '#484f58',
+              borderWidth: 1,
+              borderDash: [5, 5],
+              label: {
+                display: true,
+                content: 'Entry 8%',
+                position: 'end',
+                color: '#6e7681',
+                font: { size: 9 }
+              }
+            },
+            zeroLine: {
+              type: 'line',
+              yMin: 0,
+              yMax: 0,
+              borderColor: '#30363d',
+              borderWidth: 1
+            }
+          }
+        }
+      },
+      scales: {
+        x: {
+          type: 'time',
+          time: {
+            tooltipFormat: 'MMM d, h:mm a',
+            displayFormats: {
+              hour: 'h a',
+              minute: 'h:mm a'
+            }
+          },
+          grid: { color: 'rgba(48,54,61,0.5)', drawBorder: false },
+          ticks: { color: '#8b949e', font: { size: 10 }, maxTicksLimit: 8 }
+        },
+        y: {
+          title: {
+            display: true,
+            text: 'Edge %',
+            color: '#8b949e',
+            font: { size: 10 }
+          },
+          grid: { color: 'rgba(48,54,61,0.5)', drawBorder: false },
+          ticks: {
+            color: '#8b949e',
+            font: { size: 10 },
+            callback: function(v) { return v.toFixed(0) + '%'; }
+          }
+        }
+      }
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
 //  Master refresh
 // ---------------------------------------------------------------------------
 async function refresh() {
   await Promise.all([
     loadStatus(),
+    loadFreshness(),
     loadPnlChart(),
+    loadEdgeChart(),
     loadPositions(),
     loadTrades(),
     loadSignals(),

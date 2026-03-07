@@ -1,0 +1,795 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>AetherBot - The Math</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>%E2%9A%A1</text></svg>">
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --bg-canvas:#0d1117;--bg-card:#161b22;--bg-card-alt:#1c2128;
+    --border:#30363d;--border-light:#484f58;
+    --text-primary:#e6edf3;--text-secondary:#8b949e;--text-muted:#6e7681;
+    --accent:#58a6ff;--green:#3fb950;--red:#f85149;--yellow:#d29922;--orange:#db6d28;
+    --purple:#a371f7;--pink:#f778ba;
+    --blue-badge:#1f6feb;--green-badge:#238636;--yellow-badge:#9e6a03;
+    --radius:12px;--radius-sm:8px;--shadow:0 1px 3px rgba(0,0,0,.4);
+  }
+  html{font-size:16px;-webkit-text-size-adjust:100%}
+  body{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+    background:var(--bg-canvas);color:var(--text-primary);line-height:1.6;min-height:100vh;overflow-x:hidden}
+  .container{max-width:1200px;margin:0 auto;padding:12px}
+  @media(min-width:768px){.container{padding:24px 32px}}
+
+  /* Header */
+  .header{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;padding:16px 0 12px;border-bottom:1px solid var(--border);margin-bottom:20px}
+  .header h1{font-size:1.15rem;font-weight:700;display:flex;align-items:center;gap:6px}
+  .header h1 span{font-size:1.3rem}
+  .header-right{display:flex;align-items:center;gap:12px}
+  .header-link{color:var(--accent);text-decoration:none;font-size:.8rem}
+  .header-link:hover{text-decoration:underline}
+
+  /* Section titles */
+  .section-title{font-size:.85rem;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-secondary);margin:28px 0 12px;padding-bottom:6px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px}
+  .section-title .step-num{background:var(--blue-badge);color:#fff;font-size:.65rem;padding:2px 7px;border-radius:10px;font-weight:700}
+
+  /* Cards */
+  .card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:16px;box-shadow:var(--shadow)}
+  .card-title{font-size:.9rem;font-weight:700;margin-bottom:12px;color:var(--text-primary)}
+
+  /* Charts grid */
+  .charts-grid{display:grid;grid-template-columns:1fr;gap:16px}
+  @media(min-width:768px){.charts-grid{grid-template-columns:1fr 1fr}}
+  .chart-wrap{position:relative;width:100%;height:220px}
+  @media(min-width:768px){.chart-wrap{height:280px}}
+
+  /* Controls bar */
+  .controls-bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:14px 16px}
+  .controls-bar label{font-size:.75rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.04em;font-weight:600}
+  .controls-bar select{background:var(--bg-canvas);border:1px solid var(--border);border-radius:6px;color:var(--text-primary);padding:7px 12px;font-size:.82rem;cursor:pointer}
+  .controls-bar select:focus{outline:none;border-color:var(--accent)}
+  .btn{padding:7px 16px;border-radius:6px;border:1px solid var(--border);font-size:.78rem;font-weight:600;cursor:pointer;background:var(--bg-card-alt);color:var(--text-primary);transition:background .15s}
+  .btn:hover{background:var(--border)}
+  .btn-primary{background:var(--blue-badge);color:#fff;border-color:var(--blue-badge)}
+  .btn-primary:hover{background:#388bfd}
+  .status-text{font-size:.75rem;color:var(--text-muted);margin-left:auto}
+
+  /* Pipeline diagram */
+  .pipeline{display:flex;align-items:center;justify-content:center;gap:3px;flex-wrap:nowrap;padding:16px 4px;overflow-x:auto}
+  .pipe-step{background:var(--bg-card-alt);border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 10px;text-align:center;min-width:80px;flex-shrink:0;transition:border-color .2s,box-shadow .2s}
+  .pipe-step.active{border-color:var(--accent);box-shadow:0 0 8px rgba(88,166,255,.15)}
+  .pipe-step .step-label{font-size:.6rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em}
+  .pipe-step .step-name{font-size:.72rem;font-weight:600;color:var(--text-primary);margin-top:2px}
+  .pipe-step .step-value{font-size:.68rem;color:var(--accent);margin-top:3px;font-family:'SF Mono',Monaco,Consolas,monospace}
+  .pipe-arrow{color:var(--accent);font-size:.9rem;font-weight:700;flex-shrink:0}
+
+  /* Formula boxes */
+  .formula{background:var(--bg-card-alt);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 16px;font-family:'SF Mono',Monaco,Consolas,monospace;font-size:.78rem;color:var(--accent);overflow-x:auto;margin:8px 0 14px;line-height:1.7}
+  .formula .label{color:var(--text-muted);font-size:.68rem;display:block;margin-bottom:4px;text-transform:uppercase;letter-spacing:.04em;font-family:system-ui,sans-serif}
+
+  /* Tables */
+  .table-wrap{overflow-x:auto;scrollbar-width:thin}
+  table{width:100%;border-collapse:collapse;font-size:.78rem;white-space:nowrap}
+  th{position:sticky;top:0;z-index:1;text-align:left;padding:8px 10px;font-size:.68rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.04em;background:var(--bg-card-alt);border-bottom:1px solid var(--border);font-weight:600}
+  td{padding:7px 10px;border-bottom:1px solid rgba(48,54,61,.4)}
+  tbody tr:nth-child(even){background:rgba(22,27,34,.6)}
+  tbody tr:hover{background:rgba(88,166,255,.06)}
+  .text-green{color:var(--green)}.text-red{color:var(--red)}.text-yellow{color:var(--yellow)}
+  .text-accent{color:var(--accent)}.text-muted{color:var(--text-muted)}.text-purple{color:var(--purple)}
+
+  /* Metric cards row */
+  .metric-row{display:flex;gap:12px;flex-wrap:wrap;margin:12px 0}
+  .metric-card{background:var(--bg-card-alt);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 16px;flex:1;min-width:120px;text-align:center}
+  .metric-card .metric-label{font-size:.65rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin-bottom:4px}
+  .metric-card .metric-value{font-size:1.1rem;font-weight:700;font-family:'SF Mono',Monaco,Consolas,monospace}
+
+  /* Risk checks */
+  .risk-grid{display:grid;grid-template-columns:1fr;gap:8px}
+  @media(min-width:768px){.risk-grid{grid-template-columns:1fr 1fr}}
+  .risk-item{display:flex;align-items:center;gap:10px;padding:10px 14px;background:var(--bg-card-alt);border:1px solid var(--border);border-radius:var(--radius-sm)}
+  .risk-icon{font-size:1rem;flex-shrink:0}
+  .risk-label{font-size:.78rem;color:var(--text-primary);flex:1}
+  .risk-value{font-size:.78rem;font-family:'SF Mono',Monaco,Consolas,monospace;color:var(--text-secondary)}
+
+  /* Placeholder for missing data */
+  .no-data-placeholder{text-align:center;padding:40px 16px;color:var(--text-muted);border:1px dashed var(--border);border-radius:var(--radius-sm);margin:8px 0}
+  .placeholder-icon{font-size:2rem;margin-bottom:8px}
+  .placeholder-title{font-size:.85rem;font-weight:600;color:var(--text-secondary);margin-bottom:4px}
+  .placeholder-desc{font-size:.75rem;line-height:1.5}
+
+  /* Badge */
+  .badge{display:inline-block;font-size:.63rem;font-weight:600;padding:2px 8px;border-radius:20px;text-transform:uppercase;letter-spacing:.03em}
+  .badge-green{background:var(--green-badge);color:#fff}
+  .badge-yellow{background:var(--yellow-badge);color:#fff}
+  .badge-red{background:rgba(248,81,73,.2);color:var(--red)}
+  .badge-blue{background:var(--blue-badge);color:#fff}
+
+  /* Footer */
+  .footer{text-align:center;padding:32px 0 16px;font-size:.72rem;color:var(--text-muted);border-top:1px solid var(--border);margin-top:32px}
+  .footer a{color:var(--accent);text-decoration:none}
+  .footer a:hover{text-decoration:underline}
+</style>
+</head>
+<body>
+<div class="container">
+
+  <!-- ===== Header ===== -->
+  <header class="header">
+    <div class="header-left">
+      <h1><span>&#9889;</span> AetherBot &mdash; The Math</h1>
+    </div>
+    <div class="header-right">
+      <a href="/" class="header-link">&larr; Dashboard</a>
+      <a href="/whitepaper" class="header-link">Whitepaper</a>
+      <a href="/strategy-lab" class="header-link">Strategy Lab</a>
+    </div>
+  </header>
+
+  <!-- ===== Controls ===== -->
+  <div class="card controls-bar" id="controls">
+    <label for="city-select">City</label>
+    <select id="city-select"><option value="">Loading...</option></select>
+    <label for="date-select">Date</label>
+    <select id="date-select"><option value="">Loading...</option></select>
+    <button class="btn btn-primary" onclick="analyze()">Analyze</button>
+    <span class="status-text" id="status-text">Select a city and date to begin</span>
+  </div>
+
+  <!-- ===== Section 1: Pipeline Overview ===== -->
+  <div class="section-title"><span class="step-num">1-8</span> Signal Pipeline</div>
+  <div class="card">
+    <div class="pipeline" id="pipeline">
+      <div class="pipe-step" id="ps-raw"><div class="step-label">Stage 1</div><div class="step-name">Raw Data</div><div class="step-value" id="pv-raw">&mdash;</div></div>
+      <div class="pipe-arrow">&rarr;</div>
+      <div class="pipe-step" id="ps-ens"><div class="step-label">Stage 2</div><div class="step-name">Ensemble P</div><div class="step-value" id="pv-ens">&mdash;</div></div>
+      <div class="pipe-arrow">&rarr;</div>
+      <div class="pipe-step" id="ps-hrrr"><div class="step-label">Stage 3</div><div class="step-name">HRRR Correct</div><div class="step-value" id="pv-hrrr">&mdash;</div></div>
+      <div class="pipe-arrow">&rarr;</div>
+      <div class="pipe-step" id="ps-blend"><div class="step-label">Stage 4</div><div class="step-name">Blend</div><div class="step-value" id="pv-blend">&mdash;</div></div>
+      <div class="pipe-arrow">&rarr;</div>
+      <div class="pipe-step" id="ps-cal"><div class="step-label">Stage 5</div><div class="step-name">Calibrate</div><div class="step-value" id="pv-cal">&mdash;</div></div>
+      <div class="pipe-arrow">&rarr;</div>
+      <div class="pipe-step" id="ps-edge"><div class="step-label">Stage 6</div><div class="step-name">Edge Detect</div><div class="step-value" id="pv-edge">&mdash;</div></div>
+      <div class="pipe-arrow">&rarr;</div>
+      <div class="pipe-step" id="ps-kelly"><div class="step-label">Stage 7</div><div class="step-name">Kelly Size</div><div class="step-value" id="pv-kelly">&mdash;</div></div>
+      <div class="pipe-arrow">&rarr;</div>
+      <div class="pipe-step" id="ps-risk"><div class="step-label">Stage 8</div><div class="step-name">Risk Check</div><div class="step-value" id="pv-risk">&mdash;</div></div>
+    </div>
+  </div>
+
+  <!-- ===== Section 2: Raw Forecast Data ===== -->
+  <div class="section-title"><span class="step-num">1</span> Raw Forecast Data</div>
+  <div class="charts-grid">
+    <div class="card">
+      <div class="card-title">Ensemble Temperature Distribution</div>
+      <div id="ens-chart-area">
+        <div class="no-data-placeholder"><div class="placeholder-icon">&#9728;</div><div class="placeholder-title">Awaiting Analysis</div><div class="placeholder-desc">Select a city and date, then click Analyze.</div></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Data Sources Summary</div>
+      <div class="table-wrap" id="sources-table-area">
+        <table>
+          <thead><tr><th>Source</th><th>Model Run</th><th>Forecast High</th><th>Status</th></tr></thead>
+          <tbody id="sources-body">
+            <tr><td>GFS Ensemble</td><td class="text-muted">&mdash;</td><td class="text-muted">&mdash;</td><td><span class="badge badge-yellow">Awaiting</span></td></tr>
+            <tr><td>HRRR</td><td class="text-muted">&mdash;</td><td class="text-muted">&mdash;</td><td><span class="badge badge-yellow">Awaiting</span></td></tr>
+            <tr><td>NWS</td><td class="text-muted">&mdash;</td><td class="text-muted">&mdash;</td><td><span class="badge badge-yellow">Awaiting</span></td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div style="margin-top:14px">
+        <div class="card-title">Historical Context (Same Month)</div>
+        <div id="obs-chart-area" style="height:180px;position:relative">
+          <div class="no-data-placeholder" style="padding:20px"><div class="placeholder-desc">Run analysis to view historical distribution.</div></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Section 3: Probability Construction ===== -->
+  <div class="section-title"><span class="step-num">2-4</span> Probability Construction</div>
+  <div class="card">
+    <div class="formula">
+      <span class="label">Ensemble Probability</span>
+      P<sub>ensemble</sub>(above X) = count(member_max &gt; X) / 31
+    </div>
+    <div class="formula">
+      <span class="label">Weighted Blend</span>
+      P<sub>blend</sub> = w<sub>ens</sub> &middot; P<sub>ens</sub> + w<sub>hrrr</sub>(lead) &middot; P<sub>hrrr</sub> + w<sub>nws</sub> &middot; P<sub>nws</sub>
+    </div>
+  </div>
+  <div class="charts-grid">
+    <div class="card">
+      <div class="card-title">Probability Waterfall</div>
+      <div class="chart-wrap" id="waterfall-chart-area">
+        <canvas id="waterfall-chart"></canvas>
+      </div>
+      <div id="waterfall-note" style="font-size:.68rem;color:var(--text-muted);margin-top:6px;display:none"></div>
+    </div>
+    <div class="card">
+      <div class="card-title">Blending Weights</div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Source</th><th>Base Weight</th><th>Lead-Adjusted</th><th>Note</th></tr></thead>
+          <tbody id="weights-body">
+            <tr><td colspan="4" class="text-muted">Awaiting analysis...</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="metric-row" id="lead-metrics" style="margin-top:12px">
+        <div class="metric-card"><div class="metric-label">Lead Hours</div><div class="metric-value" id="m-lead">&mdash;</div></div>
+        <div class="metric-card"><div class="metric-label">HRRR Weight</div><div class="metric-value" id="m-hrrr-w">&mdash;</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Section 4: Calibration ===== -->
+  <div class="section-title"><span class="step-num">5</span> Isotonic Calibration</div>
+  <div class="card">
+    <div class="formula">
+      <span class="label">Calibration</span>
+      P<sub>calibrated</sub> = IsotonicRegression(P<sub>raw</sub>)&ensp;&ensp;|&ensp;&ensp;Clamped to [0.01, 0.99]
+    </div>
+  </div>
+  <div class="charts-grid">
+    <div class="card">
+      <div class="card-title">Reliability Diagram</div>
+      <div class="chart-wrap" id="cal-chart-area">
+        <canvas id="cal-chart"></canvas>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Brier Score Decomposition</div>
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Component</th><th>Value</th><th>Interpretation</th></tr></thead>
+          <tbody id="brier-body">
+            <tr><td colspan="3" class="text-muted">Loading calibration data...</td></tr>
+          </tbody>
+        </table>
+      </div>
+      <div class="metric-row" id="brier-metrics" style="margin-top:12px">
+        <div class="metric-card"><div class="metric-label">Brier Score</div><div class="metric-value text-accent" id="m-brier">&mdash;</div></div>
+        <div class="metric-card"><div class="metric-label">Samples</div><div class="metric-value" id="m-samples">&mdash;</div></div>
+        <div class="metric-card"><div class="metric-label">Base Rate</div><div class="metric-value" id="m-baserate">&mdash;</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Section 5: Edge Detection ===== -->
+  <div class="section-title"><span class="step-num">6</span> Edge Detection</div>
+  <div class="card">
+    <div class="formula">
+      <span class="label">Edge Calculation</span>
+      edge = P<sub>calibrated</sub> &minus; P<sub>market</sub>&ensp;&ensp;|&ensp;&ensp;Side = edge &gt; 0 ? YES : NO&ensp;&ensp;|&ensp;&ensp;Min |edge| &ge; 8%
+    </div>
+  </div>
+  <div class="charts-grid">
+    <div class="card">
+      <div class="card-title">Model vs Market</div>
+      <div class="chart-wrap"><canvas id="edge-chart"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="card-title">Signals Detail</div>
+      <div class="table-wrap" style="max-height:310px;overflow-y:auto">
+        <table>
+          <thead><tr><th>Market</th><th>Threshold</th><th>Model P</th><th>Mkt Price</th><th>Edge</th><th>Tradeable</th></tr></thead>
+          <tbody id="signals-body">
+            <tr><td colspan="6" class="text-muted">Awaiting analysis...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Section 6-7: Kelly Sizing & Risk ===== -->
+  <div class="section-title"><span class="step-num">7-8</span> Kelly Sizing &amp; Risk Management</div>
+  <div class="card">
+    <div class="formula">
+      <span class="label">Fractional Kelly Criterion</span>
+      f* = (p &middot; b &minus; q) / b&ensp;&ensp;where b = (1 &minus; price) / price,&ensp;p = P<sub>win</sub>,&ensp;q = 1 &minus; p<br>
+      f<sub>sized</sub> = f* &times; 0.15&ensp;&ensp;|&ensp;&ensp;$ = f<sub>sized</sub> &times; bankroll&ensp;&ensp;|&ensp;&ensp;contracts = floor($ / price)
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-title">Position Sizing</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Market</th><th>Side</th><th>P<sub>win</sub></th><th>Odds (b)</th><th>Full Kelly</th><th>Frac (15%)</th><th>Contracts</th><th>Price</th><th>Cost</th><th>EV/Contract</th></tr></thead>
+        <tbody id="kelly-body">
+          <tr><td colspan="10" class="text-muted">Awaiting analysis...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-title">Risk Gate Checks</div>
+    <div class="risk-grid" id="risk-grid">
+      <div class="risk-item"><span class="risk-icon text-muted">&#9679;</span><span class="risk-label">Daily Loss Limit</span><span class="risk-value">&mdash;</span></div>
+      <div class="risk-item"><span class="risk-icon text-muted">&#9679;</span><span class="risk-label">Concurrent Positions</span><span class="risk-value">&mdash;</span></div>
+      <div class="risk-item"><span class="risk-icon text-muted">&#9679;</span><span class="risk-label">City Concentration</span><span class="risk-value">&mdash;</span></div>
+      <div class="risk-item"><span class="risk-icon text-muted">&#9679;</span><span class="risk-label">Date Concentration</span><span class="risk-value">&mdash;</span></div>
+      <div class="risk-item"><span class="risk-icon text-muted">&#9679;</span><span class="risk-label">Bankroll Available</span><span class="risk-value">&mdash;</span></div>
+    </div>
+  </div>
+
+  <!-- ===== Section 8: Final Trade Decisions ===== -->
+  <div class="section-title"><span class="step-num">&#10003;</span> Final Output: Trade Decisions</div>
+  <div class="charts-grid">
+    <div class="card" style="grid-column:1/-1">
+      <div class="card-title">Expected Value per Contract</div>
+      <div class="chart-wrap" style="height:200px"><canvas id="ev-chart"></canvas></div>
+    </div>
+  </div>
+  <div class="card">
+    <div class="card-title">Complete Trade Detail</div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Market</th><th>Side</th><th>Model P</th><th>Mkt Price</th><th>Edge</th><th>Kelly f*</th><th>Contracts</th><th>Price</th><th>Cost</th><th>EV/Contract</th><th>Status</th></tr></thead>
+        <tbody id="trades-body">
+          <tr><td colspan="11" class="text-muted">Awaiting analysis...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ===== Footer ===== -->
+  <div class="footer">
+    AetherBot v1.0 &middot; March 2026 &middot; <a href="/">Back to Dashboard</a>
+  </div>
+
+</div><!-- /container -->
+
+<script>
+// ---------------------------------------------------------------------------
+//  Helpers
+// ---------------------------------------------------------------------------
+var API = '';
+var charts = {};
+function $(id){ return document.getElementById(id); }
+function fmtPct(v){ return v != null ? (v * 100).toFixed(1) + '%' : '&mdash;'; }
+function fmtDol(v){ return v != null ? '$' + v.toFixed(2) : '&mdash;'; }
+
+async function safeFetch(url){
+  try{ var r = await fetch(API + url); if(!r.ok) return null; return await r.json(); }
+  catch(e){ return null; }
+}
+
+function destroyChart(key){
+  if(charts[key]){ charts[key].destroy(); charts[key]=null; }
+}
+
+var CHART_DEFAULTS = {
+  gridColor: 'rgba(48,54,61,0.5)',
+  tickColor: '#8b949e',
+  tickFont: {size:10},
+  tooltip: {backgroundColor:'#1c2128',titleColor:'#e6edf3',bodyColor:'#e6edf3',borderColor:'#30363d',borderWidth:1},
+};
+
+// ---------------------------------------------------------------------------
+//  Initialization
+// ---------------------------------------------------------------------------
+document.addEventListener('DOMContentLoaded', function(){
+  loadSelectors();
+  loadCalibration();
+});
+
+async function loadSelectors(){
+  var data = await safeFetch('/api/math/available-dates');
+  if(!data) return;
+  var cs = $('city-select');
+  var ds = $('date-select');
+  cs.innerHTML = '<option value="">Select city...</option>';
+  (data.cities||[]).forEach(function(c){ cs.innerHTML += '<option value="'+c+'">'+c+'</option>'; });
+  ds.innerHTML = '<option value="">Select date...</option>';
+  (data.dates||[]).forEach(function(d){ ds.innerHTML += '<option value="'+d+'">'+d+'</option>'; });
+  // Auto-select first
+  if(data.cities && data.cities.length) cs.value = data.cities[0];
+  if(data.dates && data.dates.length) ds.value = data.dates[0];
+}
+
+// ---------------------------------------------------------------------------
+//  Main Analyze
+// ---------------------------------------------------------------------------
+async function analyze(){
+  var city = $('city-select').value;
+  var dt = $('date-select').value;
+  if(!city||!dt){ $('status-text').textContent='Please select both city and date.'; return; }
+  $('status-text').textContent = 'Loading '+city+' / '+dt+'...';
+
+  var month = parseInt(dt.split('-')[1]);
+  var [raw, pipeline, kelly, obs] = await Promise.all([
+    safeFetch('/api/math/raw-data?city='+city+'&target_date='+dt),
+    safeFetch('/api/math/probability-pipeline?city='+city+'&target_date='+dt),
+    safeFetch('/api/math/kelly-sizing?city='+city+'&target_date='+dt),
+    safeFetch('/api/math/observation-histogram?city='+city+'&month='+month),
+  ]);
+
+  renderRawData(raw);
+  renderObsHistogram(obs);
+  renderPipeline(pipeline);
+  renderEdge(pipeline);
+  renderKelly(kelly);
+  renderTradeDecisions(kelly);
+  updatePipelineSummary(raw, pipeline, kelly);
+
+  $('status-text').textContent = 'Data loaded for '+city+' / '+dt;
+}
+
+// ---------------------------------------------------------------------------
+//  Pipeline summary (top flow diagram values)
+// ---------------------------------------------------------------------------
+function updatePipelineSummary(raw, pipeline, kelly){
+  // Raw data
+  if(raw){
+    var parts = [];
+    if(raw.ensemble) parts.push(raw.ensemble.member_count+' members');
+    if(raw.hrrr) parts.push('HRRR '+raw.hrrr.daily_max_f+'\u00B0F');
+    if(raw.nws) parts.push('NWS '+raw.nws.high_f+'\u00B0F');
+    $('pv-raw').textContent = parts.join(', ') || '\u2014';
+    if(parts.length) $('ps-raw').classList.add('active');
+  }
+  if(pipeline && pipeline.markets && pipeline.markets.length){
+    var m = pipeline.markets[0]; // representative market
+    $('pv-ens').textContent = m.ensemble_prob != null ? (m.ensemble_prob*100).toFixed(1)+'%' : '\u2014';
+    $('pv-hrrr').textContent = m.hrrr_prob != null ? (m.hrrr_prob*100).toFixed(1)+'%' : '\u2014';
+    $('pv-blend').textContent = m.blended_prob != null ? (m.blended_prob*100).toFixed(1)+'%' : '\u2014';
+    $('pv-cal').textContent = m.calibrated_prob != null ? (m.calibrated_prob*100).toFixed(1)+'%' : '\u2014';
+    $('pv-edge').textContent = m.raw_edge != null ? (m.raw_edge*100).toFixed(1)+'%' : '\u2014';
+    ['ps-ens','ps-hrrr','ps-blend','ps-cal','ps-edge'].forEach(function(id){ $(id).classList.add('active'); });
+  }
+  if(kelly && kelly.trades && kelly.trades.length){
+    $('pv-kelly').textContent = kelly.trades.length+' trades';
+    $('ps-kelly').classList.add('active');
+    var allOk = kelly.risk_checks && Object.values(kelly.risk_checks).every(function(c){return c.ok;});
+    $('pv-risk').textContent = allOk ? 'All pass' : 'Check failed';
+    $('pv-risk').style.color = allOk ? 'var(--green)' : 'var(--red)';
+    $('ps-risk').classList.add('active');
+  }
+}
+
+// ---------------------------------------------------------------------------
+//  Section 2: Raw Forecast Data
+// ---------------------------------------------------------------------------
+function renderRawData(data){
+  if(!data){ return; }
+  // Sources table
+  var sb = $('sources-body');
+  var rows = '';
+
+  // GFS
+  if(data.ensemble){
+    var e = data.ensemble;
+    rows += '<tr><td>GFS Ensemble</td><td>'+fmtRun(e.model_run_time)+'</td>';
+    rows += '<td class="text-accent">'+e.mean+' &plusmn; '+e.std+' \u00B0F</td>';
+    rows += '<td><span class="badge badge-green">'+e.member_count+' members</span></td></tr>';
+  } else {
+    rows += '<tr><td>GFS Ensemble</td><td class="text-muted">\u2014</td><td class="text-muted">\u2014</td><td><span class="badge badge-red">No data</span></td></tr>';
+  }
+  // HRRR
+  if(data.hrrr){
+    rows += '<tr><td>HRRR</td><td>'+fmtRun(data.hrrr.model_run_time)+'</td>';
+    rows += '<td class="text-accent">'+data.hrrr.daily_max_f+' \u00B0F</td>';
+    rows += '<td><span class="badge badge-green">Fresh</span></td></tr>';
+  } else {
+    rows += '<tr><td>HRRR</td><td class="text-muted">\u2014</td><td class="text-muted">\u2014</td><td><span class="badge badge-red">No data</span></td></tr>';
+  }
+  // NWS
+  if(data.nws){
+    rows += '<tr><td>NWS</td><td>'+fmtRun(data.nws.fetched_at)+'</td>';
+    rows += '<td class="text-accent">'+data.nws.high_f+' \u00B0F</td>';
+    rows += '<td><span class="badge badge-green">Fresh</span></td></tr>';
+  } else {
+    rows += '<tr><td>NWS</td><td class="text-muted">\u2014</td><td class="text-muted">\u2014</td><td><span class="badge badge-red">No data</span></td></tr>';
+  }
+  sb.innerHTML = rows;
+
+  // Ensemble histogram
+  var area = $('ens-chart-area');
+  if(!data.ensemble){
+    area.innerHTML = '<div class="no-data-placeholder"><div class="placeholder-icon">&#9728;</div><div class="placeholder-title">GFS Ensemble Not Available</div><div class="placeholder-desc">Ensemble data has not been fetched yet. The pipeline uses HRRR and NWS sources only.</div></div>';
+    return;
+  }
+  area.innerHTML = '<div class="chart-wrap"><canvas id="ens-chart"></canvas></div>';
+  buildEnsembleHistogram(data.ensemble);
+}
+
+function buildEnsembleHistogram(ens){
+  destroyChart('ens');
+  var temps = ens.member_maxes;
+  var mn = Math.floor(Math.min.apply(null,temps));
+  var mx = Math.ceil(Math.max.apply(null,temps))+1;
+  var labels=[], counts=[];
+  for(var t=mn;t<mx;t++){
+    labels.push(t+'\u00B0');
+    counts.push(temps.filter(function(v){return Math.round(v)===t;}).length);
+  }
+  var ctx = $('ens-chart').getContext('2d');
+  charts.ens = new Chart(ctx,{
+    type:'bar',
+    data:{labels:labels,datasets:[{label:'Members',data:counts,backgroundColor:'rgba(88,166,255,0.6)',borderColor:'rgba(88,166,255,0.9)',borderWidth:1,borderRadius:3}]},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:false},tooltip:CHART_DEFAULTS.tooltip},
+      scales:{
+        x:{grid:{color:CHART_DEFAULTS.gridColor},ticks:{color:CHART_DEFAULTS.tickColor,font:CHART_DEFAULTS.tickFont},title:{display:true,text:'Daily Max Temperature (\u00B0F)',color:CHART_DEFAULTS.tickColor,font:{size:11}}},
+        y:{grid:{color:CHART_DEFAULTS.gridColor},ticks:{color:CHART_DEFAULTS.tickColor,font:CHART_DEFAULTS.tickFont,stepSize:1},title:{display:true,text:'Member Count',color:CHART_DEFAULTS.tickColor,font:{size:11}},beginAtZero:true}
+      }
+    }
+  });
+}
+
+function renderObsHistogram(data){
+  destroyChart('obs');
+  var area = $('obs-chart-area');
+  if(!data || !data.bins || !data.bins.length){
+    area.innerHTML = '<div class="no-data-placeholder" style="padding:20px"><div class="placeholder-desc">No historical observations available for this city/month.</div></div>';
+    return;
+  }
+  area.innerHTML = '<canvas id="obs-chart"></canvas>';
+  var labels = data.bins.map(function(b){return b.temp_low+'-'+b.temp_high;});
+  var counts = data.bins.map(function(b){return b.count;});
+  var ctx = $('obs-chart').getContext('2d');
+  charts.obs = new Chart(ctx,{
+    type:'bar',
+    data:{labels:labels,datasets:[{label:'Days',data:counts,backgroundColor:'rgba(88,166,255,0.3)',borderColor:'rgba(88,166,255,0.6)',borderWidth:1,borderRadius:2}]},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:false},tooltip:CHART_DEFAULTS.tooltip,
+        title:{display:true,text:'Historical Highs: \u03BC='+data.mean+'\u00B0F, \u03C3='+data.std+'\u00B0F (n='+data.sample_count+')',color:'#8b949e',font:{size:10}}},
+      scales:{
+        x:{grid:{display:false},ticks:{color:CHART_DEFAULTS.tickColor,font:{size:8}}},
+        y:{grid:{color:CHART_DEFAULTS.gridColor},ticks:{color:CHART_DEFAULTS.tickColor,font:{size:8}},beginAtZero:true}
+      }
+    }
+  });
+}
+
+function fmtRun(ts){
+  if(!ts) return '\u2014';
+  try{ var d=new Date(ts); return d.toLocaleString('en-US',{month:'short',day:'numeric',hour:'numeric',minute:'2-digit',timeZoneName:'short'}); }
+  catch(e){ return ts.substring(0,16); }
+}
+
+// ---------------------------------------------------------------------------
+//  Section 3: Probability Waterfall + Weights
+// ---------------------------------------------------------------------------
+function renderPipeline(data){
+  destroyChart('waterfall');
+  if(!data || !data.markets || !data.markets.length){
+    $('weights-body').innerHTML = '<tr><td colspan="4" class="text-muted">No signal data available.</td></tr>';
+    return;
+  }
+  // Waterfall: show first tradeable (or first) market as representative
+  var m = data.markets.find(function(x){return x.is_tradeable;}) || data.markets[0];
+  var stages = [
+    {label:'Ensemble',val:m.ensemble_prob,color:'rgba(88,166,255,0.7)'},
+    {label:'HRRR',val:m.hrrr_prob,color:'rgba(210,153,34,0.7)'},
+    {label:'NWS',val:m.nws_prob,color:'rgba(219,109,40,0.7)'},
+    {label:'Blended',val:m.blended_prob,color:'rgba(63,185,80,0.7)'},
+    {label:'Calibrated',val:m.calibrated_prob,color:'rgba(163,113,247,0.7)'},
+    {label:'Market',val:m.market_yes_price,color:'rgba(248,81,73,0.5)'},
+  ];
+  var ctx = $('waterfall-chart').getContext('2d');
+  charts.waterfall = new Chart(ctx,{
+    type:'bar',
+    data:{
+      labels:stages.map(function(s){return s.label;}),
+      datasets:[{
+        data:stages.map(function(s){return s.val != null ? s.val : 0;}),
+        backgroundColor:stages.map(function(s){return s.color;}),
+        borderColor:stages.map(function(s){return s.color.replace('0.7','1').replace('0.5','1');}),
+        borderWidth:1,borderRadius:4
+      }]
+    },
+    options:{
+      indexAxis:'y',responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:false},tooltip:{...CHART_DEFAULTS.tooltip,callbacks:{label:function(ctx){return (ctx.raw*100).toFixed(1)+'%';}}}},
+      scales:{
+        x:{min:0,max:1,grid:{color:CHART_DEFAULTS.gridColor},ticks:{color:CHART_DEFAULTS.tickColor,font:CHART_DEFAULTS.tickFont,callback:function(v){return (v*100)+'%';}}},
+        y:{grid:{display:false},ticks:{color:CHART_DEFAULTS.tickColor,font:{size:11,weight:'bold'}}}
+      }
+    }
+  });
+
+  // Note about missing intermediate stages
+  var noteEl = $('waterfall-note');
+  if(m.hrrr_prob == null && m.nws_prob == null){
+    noteEl.style.display = 'block';
+    noteEl.textContent = 'HRRR/NWS/Blended stages empty — intermediate probabilities not stored when GFS ensemble is unavailable.';
+  } else { noteEl.style.display = 'none'; }
+
+  // Weights table
+  var w = data.weights;
+  var lh = data.lead_hours;
+  var wb = $('weights-body');
+  wb.innerHTML =
+    '<tr><td>GFS Ensemble</td><td>'+fmtPct(w.gfs_ensemble.base)+'</td><td>'+fmtPct(w.gfs_ensemble.adjusted)+'</td><td class="text-muted">Constant</td></tr>'+
+    '<tr><td>HRRR</td><td>'+fmtPct(w.hrrr.base)+'</td><td class="text-accent">'+fmtPct(w.hrrr.adjusted)+'</td><td class="text-muted">Interpolated @ '+lh.toFixed(0)+'h lead</td></tr>'+
+    '<tr><td>NWS</td><td>'+fmtPct(w.nws.base)+'</td><td>'+fmtPct(w.nws.adjusted)+'</td><td class="text-muted">Constant</td></tr>';
+  $('m-lead').textContent = lh.toFixed(0)+'h';
+  $('m-hrrr-w').textContent = (w.hrrr.adjusted*100).toFixed(1)+'%';
+}
+
+// ---------------------------------------------------------------------------
+//  Section 4: Calibration
+// ---------------------------------------------------------------------------
+async function loadCalibration(){
+  var data = await safeFetch('/api/math/calibration-curve');
+  renderCalibration(data);
+}
+
+function renderCalibration(data){
+  destroyChart('cal');
+  if(!data || !data.bins || !data.bins.length || data.total_samples === 0){
+    $('brier-body').innerHTML = '<tr><td colspan="3" class="text-muted">No calibration data. <a href="/strategy-lab" style="color:var(--accent)">Run a backtest</a> to generate.</td></tr>';
+    return;
+  }
+  // Scatter + line
+  var pts = data.bins.filter(function(b){return b.observed_freq != null && b.count > 0;});
+  var scatterData = pts.map(function(b){return {x:b.avg_forecast,y:b.observed_freq};});
+
+  // Point sizes based on sample count
+  var maxCount = Math.max.apply(null, pts.map(function(b){return b.count;}));
+  var sizes = pts.map(function(b){return 4 + (b.count/maxCount)*12;});
+
+  var ctx = $('cal-chart').getContext('2d');
+  charts.cal = new Chart(ctx,{
+    type:'scatter',
+    data:{
+      datasets:[
+        {label:'Perfect Calibration',data:[{x:0,y:0},{x:1,y:1}],type:'line',borderColor:'rgba(110,118,129,0.5)',borderDash:[6,4],borderWidth:1.5,pointRadius:0,fill:false},
+        {label:'Observed',data:scatterData,backgroundColor:'rgba(88,166,255,0.7)',borderColor:'rgba(88,166,255,1)',pointRadius:sizes,pointHoverRadius:sizes.map(function(s){return s+2;}),showLine:true,borderWidth:2,fill:false,tension:0.2},
+      ]
+    },
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:true,position:'bottom',labels:{color:'#8b949e',font:{size:10},boxWidth:12}},tooltip:{...CHART_DEFAULTS.tooltip,callbacks:{label:function(ctx){if(!ctx.raw) return '';return 'Forecast: '+(ctx.raw.x*100).toFixed(1)+'%, Observed: '+(ctx.raw.y*100).toFixed(1)+'%';}}}},
+      scales:{
+        x:{min:0,max:1,grid:{color:CHART_DEFAULTS.gridColor},ticks:{color:CHART_DEFAULTS.tickColor,font:CHART_DEFAULTS.tickFont,callback:function(v){return (v*100)+'%';}},title:{display:true,text:'Forecast Probability',color:'#8b949e',font:{size:11}}},
+        y:{min:0,max:1,grid:{color:CHART_DEFAULTS.gridColor},ticks:{color:CHART_DEFAULTS.tickColor,font:CHART_DEFAULTS.tickFont,callback:function(v){return (v*100)+'%';}},title:{display:true,text:'Observed Frequency',color:'#8b949e',font:{size:11}}}
+      }
+    }
+  });
+
+  // Brier table
+  $('brier-body').innerHTML =
+    '<tr><td class="text-accent">Brier Score</td><td><b>'+data.brier_score.toFixed(4)+'</b></td><td class="text-muted">Overall accuracy (0 = perfect)</td></tr>'+
+    '<tr><td>Reliability</td><td>'+data.reliability.toFixed(4)+'</td><td class="text-muted">Calibration error (lower is better)</td></tr>'+
+    '<tr><td>Resolution</td><td>'+data.resolution.toFixed(4)+'</td><td class="text-muted">Discrimination power (higher is better)</td></tr>'+
+    '<tr><td>Uncertainty</td><td>'+data.uncertainty.toFixed(4)+'</td><td class="text-muted">Base rate variance (fixed)</td></tr>';
+  $('m-brier').textContent = data.brier_score.toFixed(4);
+  $('m-samples').textContent = data.total_samples.toLocaleString();
+  $('m-baserate').textContent = (data.base_rate*100).toFixed(1)+'%';
+}
+
+// ---------------------------------------------------------------------------
+//  Section 5: Edge Detection
+// ---------------------------------------------------------------------------
+function renderEdge(data){
+  destroyChart('edge');
+  if(!data || !data.markets || !data.markets.length){
+    $('signals-body').innerHTML = '<tr><td colspan="6" class="text-muted">No signal data available.</td></tr>';
+    return;
+  }
+  var mkts = data.markets;
+  var labels = mkts.map(function(m){return m.short_label;});
+  var modelProbs = mkts.map(function(m){return m.calibrated_prob;});
+  var mktPrices = mkts.map(function(m){return m.market_yes_price;});
+
+  var ctx = $('edge-chart').getContext('2d');
+  charts.edge = new Chart(ctx,{
+    type:'bar',
+    data:{
+      labels:labels,
+      datasets:[
+        {label:'Model Prob',data:modelProbs,backgroundColor:'rgba(88,166,255,0.7)',borderColor:'rgba(88,166,255,1)',borderWidth:1,borderRadius:3},
+        {label:'Market Price',data:mktPrices,backgroundColor:'rgba(219,109,40,0.5)',borderColor:'rgba(219,109,40,0.9)',borderWidth:1,borderRadius:3}
+      ]
+    },
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:true,position:'bottom',labels:{color:'#8b949e',font:{size:10},boxWidth:12}},tooltip:{...CHART_DEFAULTS.tooltip,callbacks:{label:function(ctx){return ctx.dataset.label+': '+(ctx.raw*100).toFixed(1)+'%';}}}},
+      scales:{
+        x:{grid:{display:false},ticks:{color:CHART_DEFAULTS.tickColor,font:{size:10,weight:'bold'}}},
+        y:{min:0,max:1,grid:{color:CHART_DEFAULTS.gridColor},ticks:{color:CHART_DEFAULTS.tickColor,font:CHART_DEFAULTS.tickFont,callback:function(v){return (v*100)+'%';}},title:{display:true,text:'Probability',color:'#8b949e',font:{size:11}}}
+      }
+    }
+  });
+
+  // Signals table
+  var sb = $('signals-body');
+  sb.innerHTML = mkts.map(function(m){
+    var edgeStr = (m.raw_edge*100).toFixed(1)+'%';
+    var edgeClass = m.raw_edge > 0 ? 'text-green' : 'text-red';
+    var tradeable = m.is_tradeable ? '<span class="badge badge-green">'+m.side.toUpperCase()+'</span>' : '<span class="badge badge-red">No</span>';
+    var thresh = m.is_above ? 'Above '+m.threshold_f+'\u00B0' : (m.bracket_low != null ? m.bracket_low+'-'+m.bracket_high+'\u00B0' : (m.bracket_high != null ? '\u2264'+m.bracket_high+'\u00B0' : '\u2014'));
+    return '<tr><td>'+m.short_label+'</td><td>'+thresh+'</td><td>'+fmtPct(m.calibrated_prob)+'</td><td>'+fmtPct(m.market_yes_price)+'</td><td class="'+edgeClass+'">'+edgeStr+'</td><td>'+tradeable+'</td></tr>';
+  }).join('');
+}
+
+// ---------------------------------------------------------------------------
+//  Section 6-7: Kelly Sizing + Risk
+// ---------------------------------------------------------------------------
+function renderKelly(data){
+  if(!data || !data.trades || !data.trades.length){
+    $('kelly-body').innerHTML = '<tr><td colspan="10" class="text-muted">No tradeable edges detected for this city/date.</td></tr>';
+    return;
+  }
+  var kb = $('kelly-body');
+  kb.innerHTML = data.trades.map(function(t){
+    var ticker = t.market_ticker.split('-').pop();
+    var sideClass = t.side==='yes' ? 'text-green' : 'text-red';
+    var evClass = t.ev_per_contract > 0 ? 'text-green' : 'text-red';
+    return '<tr><td>'+ticker+'</td><td class="'+sideClass+'">'+t.side.toUpperCase()+'</td>'+
+      '<td>'+(t.p_win*100).toFixed(1)+'%</td><td>'+t.odds_b.toFixed(3)+'</td>'+
+      '<td>'+(t.full_kelly*100).toFixed(1)+'%</td><td>'+(t.fractional_kelly*100).toFixed(2)+'%</td>'+
+      '<td>'+t.contracts+'</td><td>$'+t.price.toFixed(2)+'</td><td>$'+t.total_cost.toFixed(2)+'</td>'+
+      '<td class="'+evClass+'">$'+(t.ev_per_contract).toFixed(4)+'</td></tr>';
+  }).join('');
+
+  // Risk grid
+  var rc = data.risk_checks;
+  var grid = $('risk-grid');
+  var items = [
+    {key:'daily_loss_limit',label:'Daily Loss Limit',fmt:function(c){return '$'+c.current.toFixed(2)+' / -$'+c.limit;}},
+    {key:'concurrent_positions',label:'Concurrent Positions',fmt:function(c){return c.current+' / '+c.limit;}},
+    {key:'city_positions',label:'City Concentration',fmt:function(c){return c.current+' / '+c.limit;}},
+    {key:'date_positions',label:'Date Concentration',fmt:function(c){return c.current+' / '+c.limit;}},
+    {key:'bankroll',label:'Bankroll Available',fmt:function(c){return '$'+c.available.toFixed(2)+' \u2265 $'+c.required.toFixed(2);}},
+  ];
+  grid.innerHTML = items.map(function(it){
+    var c = rc[it.key];
+    var icon = c.ok ? '<span class="risk-icon text-green">&#10003;</span>' : '<span class="risk-icon text-red">&#10007;</span>';
+    return '<div class="risk-item">'+icon+'<span class="risk-label">'+it.label+'</span><span class="risk-value">'+it.fmt(c)+'</span></div>';
+  }).join('');
+}
+
+// ---------------------------------------------------------------------------
+//  Section 8: Trade Decisions + EV Chart
+// ---------------------------------------------------------------------------
+function renderTradeDecisions(data){
+  destroyChart('ev');
+  if(!data || !data.trades || !data.trades.length){
+    $('trades-body').innerHTML = '<tr><td colspan="11" class="text-muted">No trades for this city/date.</td></tr>';
+    return;
+  }
+  var trades = data.trades;
+
+  // EV chart
+  var labels = trades.map(function(t){return t.market_ticker.split('-').pop();});
+  var evs = trades.map(function(t){return t.ev_per_contract;});
+  var colors = evs.map(function(v){return v >= 0 ? 'rgba(63,185,80,0.7)' : 'rgba(248,81,73,0.7)';});
+  var borders = evs.map(function(v){return v >= 0 ? 'rgba(63,185,80,1)' : 'rgba(248,81,73,1)';});
+
+  var ctx = $('ev-chart').getContext('2d');
+  charts.ev = new Chart(ctx,{
+    type:'bar',
+    data:{labels:labels,datasets:[{label:'EV/Contract',data:evs,backgroundColor:colors,borderColor:borders,borderWidth:1,borderRadius:3}]},
+    options:{responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:false},tooltip:{...CHART_DEFAULTS.tooltip,callbacks:{label:function(ctx){return 'EV: $'+ctx.raw.toFixed(4);}}}},
+      scales:{
+        x:{grid:{display:false},ticks:{color:CHART_DEFAULTS.tickColor,font:{size:10,weight:'bold'}}},
+        y:{grid:{color:CHART_DEFAULTS.gridColor},ticks:{color:CHART_DEFAULTS.tickColor,font:CHART_DEFAULTS.tickFont,callback:function(v){return '$'+v.toFixed(2);}},title:{display:true,text:'Expected Value ($)',color:'#8b949e',font:{size:11}}}
+      }
+    }
+  });
+
+  // Full trade table
+  var tb = $('trades-body');
+  tb.innerHTML = trades.map(function(t){
+    var ticker = t.market_ticker.split('-').pop();
+    var sideClass = t.side==='yes' ? 'text-green' : 'text-red';
+    var edgeClass = t.edge > 0 ? 'text-green' : 'text-red';
+    var evClass = t.ev_per_contract > 0 ? 'text-green' : 'text-red';
+    return '<tr><td>'+ticker+'</td><td class="'+sideClass+'">'+t.side.toUpperCase()+'</td>'+
+      '<td>'+(t.model_prob*100).toFixed(1)+'%</td><td>'+(t.market_price*100).toFixed(1)+'%</td>'+
+      '<td class="'+edgeClass+'">'+(t.edge*100).toFixed(1)+'%</td>'+
+      '<td>'+(t.full_kelly*100).toFixed(1)+'%</td>'+
+      '<td>'+t.contracts+'</td><td>$'+t.price.toFixed(2)+'</td><td>$'+t.total_cost.toFixed(2)+'</td>'+
+      '<td class="'+evClass+'">$'+t.ev_per_contract.toFixed(4)+'</td>'+
+      '<td><span class="badge badge-green">'+t.status.toUpperCase()+'</span></td></tr>';
+  }).join('');
+}
+</script>
+</body>
+</html>

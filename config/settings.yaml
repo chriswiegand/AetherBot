@@ -46,9 +46,21 @@ paper_trading:
   initial_bankroll: 10000
 
 scheduler:
-  ensemble_fetch_interval_minutes: 60
-  hrrr_fetch_interval_minutes: 30
+  # Smart data fetching — checks every N minutes, only fetches when new model data exists
+  smart_fetch_enabled: true
+  smart_fetch_check_minutes: 10
+  gfs_availability_lag_hours: 4.5    # GFS data available ~4.5h after run start
+  hrrr_availability_lag_hours: 1.0   # HRRR data available ~1h after run start
+
+  # Market scanning
   market_scan_interval_minutes: 5
+  market_discovery_interval_minutes: 30
+
+  # Price discovery — fast-poll newly listed contracts
+  price_discovery_window_hours: 2    # How long a contract is "new"
+  price_discovery_scan_minutes: 2    # Poll frequency during window
+
+  # Settlement
   settlement_check_hour: 11
   settlement_check_minute: 15
 

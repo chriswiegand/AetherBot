@@ -97,9 +97,21 @@ class PaperTradingConfig:
 
 @dataclass
 class SchedulerConfig:
-    ensemble_fetch_interval_minutes: int = 60
-    hrrr_fetch_interval_minutes: int = 30
+    # Smart data fetching
+    smart_fetch_enabled: bool = True
+    smart_fetch_check_minutes: int = 10
+    gfs_availability_lag_hours: float = 4.5
+    hrrr_availability_lag_hours: float = 1.0
+
+    # Market scanning
     market_scan_interval_minutes: int = 5
+    market_discovery_interval_minutes: int = 30
+
+    # Price discovery
+    price_discovery_window_hours: float = 2.0
+    price_discovery_scan_minutes: int = 2
+
+    # Settlement
     settlement_check_hour: int = 11
     settlement_check_minute: int = 15
 

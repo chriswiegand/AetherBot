@@ -107,6 +107,7 @@ class KalshiMarket(Base):
     close_time = Column(Text)
     status = Column(Text)                        # open, closed, settled
     result = Column(Text)                        # yes, no (after settlement)
+    first_discovered_at = Column(Text)            # ISO8601 UTC — set once on first insert
     last_updated = Column(Text, nullable=False)
 
     __table_args__ = (
