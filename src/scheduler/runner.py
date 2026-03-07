@@ -29,10 +29,19 @@ logger = logging.getLogger(__name__)
 def run_bot():
     """Main entry point: initialize everything and start the scheduler."""
     # Setup logging
+    from pathlib import Path
+    log_dir = Path(__file__).resolve().parent.parent.parent / "data"
+    log_dir.mkdir(exist_ok=True)
+    log_file = log_dir / "bot.log"
+
     logging.basicConfig(
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler(log_file),
+        ],
     )
 
     logger.info("=" * 60)
@@ -55,7 +64,7 @@ def run_bot():
     settlement_checker = SettlementChecker(
         ctx.cities, paper_trader=ctx.paper_trader
     )
-    pnl_tracker = PnLTracker()
+    pnl_tracker = PnLTracker(get_bankroll=lambda: ctx.paper_trader.bankroll)
 
     # Create scheduler
     scheduler = BlockingScheduler()

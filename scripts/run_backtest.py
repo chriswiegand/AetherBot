@@ -24,7 +24,6 @@ from src.config.settings import load_settings
 from src.config.cities import load_cities
 from src.data.db import init_db
 from src.backtest.replay_engine import BacktestEngine
-from src.backtest.performance_report import PerformanceReport
 
 logging.basicConfig(
     level=logging.INFO,
@@ -73,7 +72,7 @@ def main():
     else:
         start_date = end_date - timedelta(days=args.days)
 
-    bankroll = args.bankroll or settings.strategy.initial_bankroll
+    bankroll = args.bankroll or settings.paper_trading.initial_bankroll
 
     logger.info("=" * 60)
     logger.info("AetherBot - Backtest Engine")
@@ -85,12 +84,20 @@ def main():
     logger.info(f"Starting bankroll: ${bankroll:.2f}")
 
     # Run backtest
-    engine = BacktestEngine(settings, cities)
-    results = engine.run(start_date, end_date, bankroll)
+    engine = BacktestEngine(settings)
+    results = engine.run(
+        start_date.isoformat(),
+        end_date.isoformat(),
+        cities,
+    )
 
-    # Generate report
-    report = PerformanceReport()
-    metrics = report.compute_metrics(results)
+    # Report results
+    metrics = results.performance
+    if metrics is None:
+        logger.warning("No trades generated during backtest period.")
+        return
+
+    final_bankroll = bankroll + metrics.gross_pnl
 
     logger.info("\n" + "=" * 60)
     logger.info("BACKTEST RESULTS")
@@ -102,9 +109,11 @@ def main():
     logger.info(f"Sharpe ratio:    {metrics.sharpe_ratio:.2f}")
     logger.info(f"Profit factor:   {metrics.profit_factor:.2f}")
     logger.info(f"Avg edge:        {metrics.avg_edge:.1%}")
-    logger.info(f"Final bankroll:  ${metrics.final_bankroll:.2f}")
-    if metrics.brier_score is not None:
-        logger.info(f"Brier score:     {metrics.brier_score:.4f}")
+    logger.info(f"Final bankroll:  ${final_bankroll:.2f}")
+    if results.brier is not None:
+        logger.info(f"Brier score:     {results.brier.brier_score:.4f}")
+        logger.info(f"  Reliability:   {results.brier.reliability:.4f}")
+        logger.info(f"  Resolution:    {results.brier.resolution:.4f}")
     logger.info("=" * 60)
 
 

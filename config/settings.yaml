@@ -9,7 +9,7 @@ data_sources:
   ensemble_model: "gfs025"
   ensemble_members: 31
   forecast_url: "https://api.open-meteo.com/v1/forecast"
-  hrrr_model: "hrrr_conus"
+  hrrr_model: "ncep_hrrr_conus"
   nws_base_url: "https://api.weather.gov"
   nws_user_agent: "KalshiWeatherBot/1.0 (weather-bot@example.com)"
   iem_cli_url: "https://mesonet.agron.iastate.edu/json/cli.py"
@@ -18,9 +18,10 @@ data_sources:
 strategy:
   edge_threshold: 0.08
   min_edge_hrrr_confirm: 0.06
+  min_model_prob: 0.55
   fractional_kelly: 0.15
-  max_position_pct: 0.05
-  max_position_dollars: 100
+  max_position_pct: 0.10
+  max_position_dollars: 1000
   daily_loss_limit: 300
   max_concurrent_positions: 20
   max_positions_per_city: 6

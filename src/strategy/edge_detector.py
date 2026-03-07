@@ -91,6 +91,13 @@ class EdgeDetector:
             else:
                 side = "no"   # Model says less likely than market
 
+            # Compute win probability on the traded side
+            win_prob = model_prob if side == "yes" else (1.0 - model_prob)
+
+            # Require minimum model confidence (Pwin floor)
+            if win_prob < self.config.min_model_prob:
+                continue
+
             # Apply threshold
             if abs_edge < self.config.edge_threshold:
                 continue

@@ -5,9 +5,10 @@ from __future__ import annotations
 from datetime import datetime
 
 from sqlalchemy import (
-    Column, Integer, Float, Text, DateTime, Index, UniqueConstraint, create_engine
+    Boolean, Column, ForeignKey, Integer, Float, Text, DateTime,
+    Index, UniqueConstraint, create_engine,
 )
-from sqlalchemy.orm import DeclarativeBase, Session
+from sqlalchemy.orm import DeclarativeBase, Session, relationship
 
 
 class Base(DeclarativeBase):
@@ -164,6 +165,9 @@ class Trade(Base):
     price = Column(Float, nullable=False)         # 0.0-1.0 scale
     total_cost = Column(Float, nullable=False)    # dollars
 
+    # Strategy
+    strategy_id = Column(Integer, ForeignKey("strategies.id"), nullable=True)
+
     # Signal at time of trade
     signal_id = Column(Integer)
     model_prob = Column(Float)
@@ -227,3 +231,87 @@ class DailyPnL(Base):
     max_drawdown = Column(Float)
     avg_edge = Column(Float)
     brier_score = Column(Float)
+
+
+class Strategy(Base):
+    """Named strategy configurations for the bot."""
+    __tablename__ = "strategies"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(Text, unique=True, nullable=False)
+    description = Column(Text, default="")
+
+    # Entry filters
+    edge_threshold = Column(Float, default=0.08)
+    min_edge_hrrr_confirm = Column(Float, default=0.06)
+    min_model_prob = Column(Float, default=0.55)
+
+    # Position sizing
+    fractional_kelly = Column(Float, default=0.15)
+    max_position_pct = Column(Float, default=0.10)
+    max_position_dollars = Column(Float, default=1000)
+
+    # Risk management
+    daily_loss_limit = Column(Float, default=300)
+    max_concurrent_positions = Column(Integer, default=20)
+    max_positions_per_city = Column(Integer, default=6)
+    max_positions_per_date = Column(Integer, default=4)
+
+    # Market filters
+    min_price = Column(Float, default=0.08)
+    max_price = Column(Float, default=0.92)
+    max_lead_hours = Column(Float, default=72)
+
+    # Metadata
+    is_active = Column(Integer, default=0)   # 1 = bot uses this strategy
+    created_at = Column(Text, nullable=False)
+    updated_at = Column(Text, nullable=False)
+
+    # Relationships
+    trades = relationship("Trade", backref="strategy", lazy="dynamic")
+    backtest_runs = relationship("BacktestRun", backref="strategy", lazy="dynamic")
+
+
+class BacktestRun(Base):
+    """Stored results from a backtest run."""
+    __tablename__ = "backtest_runs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    strategy_id = Column(Integer, ForeignKey("strategies.id"), nullable=False)
+
+    # Run config
+    start_date = Column(Text, nullable=False)
+    end_date = Column(Text, nullable=False)
+    cities = Column(Text)          # JSON list
+
+    # Results summary
+    total_trades = Column(Integer)
+    win_rate = Column(Float)
+    gross_pnl = Column(Float)
+    sharpe_ratio = Column(Float)
+    max_drawdown = Column(Float)
+    profit_factor = Column(Float)
+    brier_score = Column(Float)
+    avg_edge = Column(Float)
+
+    # Full trade list and daily PnL for charting (JSON)
+    trades_json = Column(Text)
+    daily_pnl_json = Column(Text)
+
+    created_at = Column(Text, nullable=False)
+    duration_seconds = Column(Float)
+
+
+class OptimizationRun(Base):
+    """Results from a parameter grid search."""
+    __tablename__ = "optimization_runs"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    name = Column(Text)
+    param_ranges_json = Column(Text)     # JSON of parameter ranges
+    target_metric = Column(Text)
+    total_combinations = Column(Integer)
+    results_json = Column(Text)          # JSON array of {params, metrics}
+    best_params_json = Column(Text)      # JSON of best parameter set
+    created_at = Column(Text, nullable=False)
+    duration_seconds = Column(Float)

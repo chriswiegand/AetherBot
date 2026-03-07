@@ -10,7 +10,7 @@ import json
 import logging
 import re
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 from src.config.cities import CityConfig
 from src.data.db import get_session
@@ -175,7 +175,7 @@ class KalshiMarketDiscovery:
         """Store discovered markets in the database."""
         session = get_session()
         inserted = 0
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
 
         try:
             for pm in markets:

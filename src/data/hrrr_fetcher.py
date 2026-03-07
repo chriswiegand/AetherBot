@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 
 import httpx
 
@@ -141,7 +141,7 @@ class HRRRFetcher:
                     model_run_time=result.model_run_time,
                     valid_time=result.target_date,
                     temperature_f=result.daily_max_f,
-                    fetched_at=datetime.utcnow().isoformat(),
+                    fetched_at=datetime.now(timezone.utc).isoformat(),
                 )
                 session.add(row)
                 inserted += 1

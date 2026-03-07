@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from src.config.cities import CityConfig
 from src.data.db import get_session
@@ -174,7 +174,7 @@ class SettlementChecker:
                 else:
                     pnl = -trade.price * trade.contracts
 
-            now = datetime.utcnow().isoformat()
+            now = datetime.now(timezone.utc).isoformat()
             trade.status = "settled"
             trade.settled_at = now
             trade.settlement_value = settlement_value
@@ -195,7 +195,7 @@ class SettlementChecker:
                 brier_contribution=brier_contribution,
                 lead_hours=None,
                 model_source="calibrated",
-                created_at=datetime.utcnow().isoformat(),
+                created_at=datetime.now(timezone.utc).isoformat(),
             )
             session.add(brier)
 

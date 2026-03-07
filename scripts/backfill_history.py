@@ -26,7 +26,7 @@ import logging
 from src.config.settings import load_settings
 from src.config.cities import load_cities
 from src.data.db import init_db
-from src.data.historical_collector import backfill_observations, backfill_archive_temps
+from src.data.historical_collector import HistoricalCollector
 
 logging.basicConfig(
     level=logging.INFO,
@@ -73,13 +73,27 @@ def main():
     logger.info(f"Cities: {', '.join(cities.keys())}")
 
     # Backfill CLI observations
-    logger.info("\n--- Backfilling IEM CLI observations ---")
-    backfill_observations(cities, start_date, end_date)
+    collector = HistoricalCollector()
+    try:
+        logger.info("\n--- Backfilling IEM CLI observations ---")
+        total = 0
+        for city_name, city_config in cities.items():
+            count = collector.backfill_observations(
+                city_config, start_date.isoformat(), end_date.isoformat()
+            )
+            total += count
+        logger.info(f"Total observations stored: {total}")
 
-    # Optionally backfill archive temps
-    if args.include_archive:
-        logger.info("\n--- Backfilling Open-Meteo archive temps ---")
-        backfill_archive_temps(cities, start_date, end_date)
+        # Optionally backfill archive temps
+        if args.include_archive:
+            logger.info("\n--- Backfilling Open-Meteo archive temps ---")
+            for city_name, city_config in cities.items():
+                result = collector.backfill_archive_temps(
+                    city_config, start_date.isoformat(), end_date.isoformat()
+                )
+                logger.info(f"{city_name}: {len(result.get('dates', []))} days of archive data")
+    finally:
+        collector.close()
 
     logger.info("\nBackfill complete.")
 

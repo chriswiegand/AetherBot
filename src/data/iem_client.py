@@ -10,7 +10,7 @@ import json
 import logging
 import time
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import httpx
 
@@ -21,7 +21,7 @@ from src.data.models import Observation
 
 logger = logging.getLogger(__name__)
 
-IEM_CLI_URL = "https://mesonet.agron.iastate.edu/json/cli.py"
+IEM_CLI_URL = "https://mesonet.agron.iastate.edu/geojson/cli.py"
 
 
 @dataclass
@@ -54,7 +54,7 @@ class IEMClient:
         Returns:
             CLIReport or None if data not available
         """
-        params = {"station": station, "date": target_date}
+        params = {"station": station, "dt": target_date}
         try:
             resp = self._client.get(self.base_url, params=params)
             resp.raise_for_status()
@@ -63,12 +63,25 @@ class IEMClient:
             logger.error(f"IEM CLI fetch failed for {station} on {target_date}: {e}")
             return None
 
-        if not data:
-            logger.warning(f"No CLI data for {station} on {target_date}")
+        # GeoJSON format: {"features": [{"properties": {...}}]}
+        features = data.get("features", [])
+        if not features:
             return None
 
-        # IEM returns a list of records; take the first matching
-        record = data[0] if isinstance(data, list) else data
+        # Find the record matching our target date and station
+        record = None
+        for feat in features:
+            props = feat.get("properties", {})
+            if props.get("valid") == target_date and props.get("station") == station:
+                record = props
+                break
+
+        if record is None and features:
+            # Fallback: use first feature's properties
+            record = features[0].get("properties", {})
+
+        if not record:
+            return None
 
         high = record.get("high")
         low = record.get("low")
@@ -149,7 +162,7 @@ class IEMClient:
                         existing.high_f = report.high_f
                         existing.low_f = report.low_f
                         existing.raw_json = json.dumps(report.raw)
-                        existing.fetched_at = datetime.utcnow().isoformat()
+                        existing.fetched_at = datetime.now(timezone.utc).isoformat()
                     continue
 
                 obs = Observation(
@@ -160,7 +173,7 @@ class IEMClient:
                     low_f=report.low_f,
                     source="iem_cli",
                     raw_json=json.dumps(report.raw),
-                    fetched_at=datetime.utcnow().isoformat(),
+                    fetched_at=datetime.now(timezone.utc).isoformat(),
                 )
                 session.add(obs)
                 inserted += 1

@@ -148,6 +148,16 @@ class KellySizer:
 
         total_cost = contracts * cost_per_contract
 
+        # Guard: min_contracts override must not violate dollar caps
+        if capped_by == "min_contracts" and (
+            total_cost > self.config.max_position_dollars
+            or total_cost > self.config.max_position_pct * bankroll
+        ):
+            return PositionSize(
+                contracts=0, price_cents=price_cents, total_cost=0.0,
+                kelly_fraction=kelly, sized_fraction=sized, capped_by=None,
+            )
+
         logger.debug(
             f"Kelly sizing: full={kelly:.3f}, sized={sized:.3f}, "
             f"${dollar_amount:.2f} -> {contracts} contracts @ {price_cents}c "

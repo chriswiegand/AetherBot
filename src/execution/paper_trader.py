@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from src.config.settings import AppSettings, load_settings
 from src.data.db import get_session
@@ -38,7 +38,7 @@ class PaperTrader:
         if size.contracts <= 0:
             return None
 
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         trade_id = str(uuid.uuid4())
 
         session = get_session()
@@ -52,14 +52,14 @@ class PaperTrader:
                 side=signal.side,
                 direction="buy",
                 contracts=size.contracts,
-                price=signal.market_price if signal.side == "yes" else (1.0 - signal.market_price),
+                price=size.price_cents / 100.0,
                 total_cost=size.total_cost,
                 model_prob=signal.model_prob,
                 market_price=signal.market_price,
                 edge=signal.edge,
                 kelly_fraction=size.kelly_fraction,
                 status="filled",
-                fill_price=signal.market_price if signal.side == "yes" else (1.0 - signal.market_price),
+                fill_price=size.price_cents / 100.0,
                 created_at=now,
                 updated_at=now,
             )
@@ -124,7 +124,7 @@ class PaperTrader:
                     # NO loses: loss = -no_price * contracts
                     pnl = -no_price * trade.contracts
 
-            now = datetime.utcnow().isoformat()
+            now = datetime.now(timezone.utc).isoformat()
             trade.status = "settled"
             trade.settled_at = now
             trade.settlement_value = settlement_value

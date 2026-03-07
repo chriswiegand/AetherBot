@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 
 import httpx
 
@@ -90,13 +90,24 @@ class EnsembleFetcher:
         times = [parse_iso_datetime(t) for t in time_strings]
 
         # Extract member data (member00 through member30)
+        # Note: Open-Meteo returns member 0 as "temperature_2m" (no suffix)
         member_data: dict[int, list[float]] = {}
         for m in range(self.ds.ensemble_members):
-            key = f"temperature_2m_member{m:02d}"
-            if key in hourly:
-                member_data[m] = hourly[key]
+            if m == 0:
+                key = "temperature_2m"
+                fallback = "temperature_2m_member00"
+                if key in hourly:
+                    member_data[m] = hourly[key]
+                elif fallback in hourly:
+                    member_data[m] = hourly[fallback]
+                else:
+                    logger.warning(f"Missing member 0 in ensemble response for {city.name}")
             else:
-                logger.warning(f"Missing {key} in ensemble response for {city.name}")
+                key = f"temperature_2m_member{m:02d}"
+                if key in hourly:
+                    member_data[m] = hourly[key]
+                else:
+                    logger.warning(f"Missing {key} in ensemble response for {city.name}")
 
         if not member_data:
             return []
@@ -183,7 +194,7 @@ class EnsembleFetcher:
                         valid_time=result.target_date,
                         member=member_idx,
                         temperature_f=temp_f,
-                        fetched_at=datetime.utcnow().isoformat(),
+                        fetched_at=datetime.now(timezone.utc).isoformat(),
                     )
                     session.add(row)
                     inserted += 1

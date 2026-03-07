@@ -6,7 +6,8 @@ Each job corresponds to a step in the bot's operational cycle.
 from __future__ import annotations
 
 import logging
-from datetime import datetime, date
+from datetime import datetime, date, timezone
+from src.utils.time_utils import compute_lead_hours, parse_iso_datetime
 
 from src.config.cities import CityConfig, load_cities
 from src.config.settings import AppSettings, load_settings
@@ -116,6 +117,56 @@ def discover_markets(ctx: BotContext):
         ctx.alerts.warning(f"Market discovery failed: {e}", "kalshi")
 
 
+def _load_active_strategy(ctx: BotContext) -> int | None:
+    """Load active strategy from DB and override strategy config.
+
+    Returns the strategy_id if one is active, else None.
+    """
+    import sqlite3
+    db_path = ctx.settings.database.absolute_path
+    if not db_path.exists():
+        return None
+    try:
+        conn = sqlite3.connect(str(db_path))
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='strategies'"
+        )
+        if not cur.fetchone():
+            conn.close()
+            return None
+        cur.execute("SELECT * FROM strategies WHERE is_active = 1 LIMIT 1")
+        row = cur.fetchone()
+        conn.close()
+        if row is None:
+            return None
+        strat = dict(row)
+
+        field_map = {
+            "edge_threshold": float, "min_edge_hrrr_confirm": float,
+            "min_model_prob": float, "fractional_kelly": float,
+            "max_position_pct": float, "max_position_dollars": float,
+            "daily_loss_limit": float, "max_concurrent_positions": int,
+            "max_positions_per_city": int, "max_positions_per_date": int,
+            "min_price": float, "max_price": float, "max_lead_hours": float,
+        }
+        for field, cast in field_map.items():
+            val = strat.get(field)
+            if val is not None:
+                setattr(ctx.settings.strategy, field, cast(val))
+
+        ctx.edge_detector = EdgeDetector(ctx.settings.strategy)
+        ctx.kelly_sizer = KellySizer(ctx.settings.strategy)
+        ctx.risk_manager = RiskManager(ctx.settings.strategy)
+
+        logger.info(f"Using active strategy: {strat.get('name')} (id={strat['id']})")
+        return strat["id"]
+    except Exception as e:
+        logger.warning(f"Could not load active strategy: {e}")
+        return None
+
+
 def scan_and_trade(ctx: BotContext):
     """Core trading cycle: signal -> edge -> size -> trade."""
     if not ctx._active_markets:
@@ -124,6 +175,9 @@ def scan_and_trade(ctx: BotContext):
     if not ctx._active_markets:
         logger.info("No active markets to trade")
         return
+
+    # Load active strategy (if any) to override config
+    active_strategy_id = _load_active_strategy(ctx)
 
     # Refresh market prices
     ctx._active_markets = ctx.market_discovery.refresh_prices(ctx._active_markets)
@@ -153,6 +207,11 @@ def scan_and_trade(ctx: BotContext):
         if target_ensemble is None:
             continue
 
+        # Compute actual lead hours
+        target_date_obj = date.fromisoformat(target_date)
+        model_run_dt = parse_iso_datetime(target_ensemble.model_run_time)
+        lead_hours = compute_lead_hours(model_run_dt, target_date_obj, city_config.timezone)
+
         # Calculate ensemble probabilities
         probs = ctx.ensemble_calc.get_full_distribution(
             target_ensemble.member_daily_maxes, markets
@@ -177,10 +236,10 @@ def scan_and_trade(ctx: BotContext):
             }
 
         # Detect edges
-        trade_signals = ctx.edge_detector.scan_for_edges(signals, market_data)
+        trade_signals = ctx.edge_detector.scan_for_edges(signals, market_data, lead_hours=lead_hours)
 
         # Execute trades
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         for signal in trade_signals:
             # Check risk
             size = ctx.kelly_sizer.calculate_position_size(signal, portfolio.bankroll)

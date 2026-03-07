@@ -39,7 +39,7 @@ class DataSourceConfig:
     ensemble_model: str = "gfs025"
     ensemble_members: int = 31
     forecast_url: str = "https://api.open-meteo.com/v1/forecast"
-    hrrr_model: str = "hrrr_conus"
+    hrrr_model: str = "ncep_hrrr_conus"
     nws_base_url: str = "https://api.weather.gov"
     nws_user_agent: str = "KalshiWeatherBot/1.0 (weather-bot@example.com)"
     iem_cli_url: str = "https://mesonet.agron.iastate.edu/json/cli.py"
@@ -50,9 +50,10 @@ class DataSourceConfig:
 class StrategyConfig:
     edge_threshold: float = 0.08
     min_edge_hrrr_confirm: float = 0.06
+    min_model_prob: float = 0.55
     fractional_kelly: float = 0.15
-    max_position_pct: float = 0.05
-    max_position_dollars: float = 100
+    max_position_pct: float = 0.10
+    max_position_dollars: float = 1000
     daily_loss_limit: float = 300
     max_concurrent_positions: int = 20
     max_positions_per_city: int = 6

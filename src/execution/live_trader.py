@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 
 from src.data.db import get_session
 from src.data.kalshi_client import KalshiClient
@@ -35,7 +35,7 @@ class LiveTrader:
         if size.contracts <= 0:
             return None
 
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         trade_id = str(uuid.uuid4())
 
         try:

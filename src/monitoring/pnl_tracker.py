@@ -27,6 +27,9 @@ class DailyReport:
 class PnLTracker:
     """Tracks PnL and generates daily performance reports."""
 
+    def __init__(self, get_bankroll=None):
+        self._get_bankroll = get_bankroll
+
     def get_daily_pnl(self, target_date: str) -> float:
         """Get total PnL for a specific date."""
         session = get_session()
@@ -101,7 +104,7 @@ class PnLTracker:
                 losses=len(losses),
                 win_rate=len(wins) / len(trades) if trades else 0,
                 gross_pnl=gross_pnl,
-                bankroll=0,  # TODO: compute from cumulative
+                bankroll=self._get_bankroll() if self._get_bankroll else 0,
                 avg_edge=avg_edge,
             )
 

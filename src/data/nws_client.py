@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 
 import httpx
 
@@ -152,7 +152,7 @@ class NWSClient:
         """Store NWS forecasts in the database."""
         session = get_session()
         inserted = 0
-        now = datetime.utcnow().isoformat()
+        now = datetime.now(timezone.utc).isoformat()
         try:
             for fc in forecasts:
                 row = NWSForecast(

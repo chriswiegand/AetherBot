@@ -1,0 +1,1000 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>AetherBot Dashboard</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>%E2%9A%A1</text></svg>">
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+
+  :root{
+    --bg-canvas:#0d1117;
+    --bg-card:#161b22;
+    --bg-card-alt:#1c2128;
+    --border:#30363d;
+    --border-light:#484f58;
+    --text-primary:#e6edf3;
+    --text-secondary:#8b949e;
+    --text-muted:#6e7681;
+    --accent:#58a6ff;
+    --green:#3fb950;
+    --red:#f85149;
+    --yellow:#d29922;
+    --orange:#db6d28;
+    --blue-badge:#1f6feb;
+    --green-badge:#238636;
+    --yellow-badge:#9e6a03;
+    --radius:12px;
+    --radius-sm:8px;
+    --shadow:0 1px 3px rgba(0,0,0,.4);
+  }
+
+  html{font-size:16px;-webkit-text-size-adjust:100%}
+  body{
+    font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Oxygen,Ubuntu,Cantarell,sans-serif;
+    background:var(--bg-canvas);
+    color:var(--text-primary);
+    line-height:1.5;
+    min-height:100vh;
+    overflow-x:hidden;
+  }
+
+  /* ---------- Layout ---------- */
+  .container{
+    max-width:1200px;
+    margin:0 auto;
+    padding:12px;
+  }
+  @media(min-width:768px){
+    .container{padding:24px}
+  }
+
+  /* ---------- Header ---------- */
+  .header{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    flex-wrap:wrap;
+    gap:8px;
+    padding:16px 0 12px;
+    border-bottom:1px solid var(--border);
+    margin-bottom:16px;
+  }
+  .header-left{display:flex;align-items:center;gap:10px}
+  .header h1{
+    font-size:1.5rem;
+    font-weight:700;
+    letter-spacing:-.02em;
+    color:var(--text-primary);
+  }
+  .header h1 span{font-size:1.4rem}
+  .header-right{
+    display:flex;
+    align-items:center;
+    gap:12px;
+    font-size:.8rem;
+    color:var(--text-secondary);
+  }
+  .status-dot{
+    width:8px;height:8px;
+    border-radius:50%;
+    background:var(--green);
+    display:inline-block;
+    box-shadow:0 0 6px var(--green);
+    animation:pulse 2s ease-in-out infinite;
+  }
+  .status-dot.disconnected{
+    background:var(--red);
+    box-shadow:0 0 6px var(--red);
+  }
+  @keyframes pulse{
+    0%,100%{opacity:1}
+    50%{opacity:.5}
+  }
+
+  /* ---------- Section titles ---------- */
+  .section-title{
+    font-size:.85rem;
+    font-weight:600;
+    color:var(--text-secondary);
+    text-transform:uppercase;
+    letter-spacing:.06em;
+    margin:20px 0 10px;
+  }
+
+  /* ---------- Metrics row ---------- */
+  .metrics-scroll{
+    display:flex;
+    gap:10px;
+    overflow-x:auto;
+    padding-bottom:4px;
+    scroll-snap-type:x mandatory;
+    -webkit-overflow-scrolling:touch;
+    scrollbar-width:none;
+  }
+  .metrics-scroll::-webkit-scrollbar{display:none}
+  .metric-card{
+    flex:0 0 auto;
+    min-width:145px;
+    background:var(--bg-card);
+    border:1px solid var(--border);
+    border-radius:var(--radius);
+    padding:14px 16px;
+    scroll-snap-align:start;
+    box-shadow:var(--shadow);
+  }
+  @media(min-width:768px){
+    .metrics-scroll{
+      display:grid;
+      grid-template-columns:repeat(auto-fit,minmax(160px,1fr));
+      overflow:visible;
+    }
+    .metric-card{min-width:0}
+  }
+  .metric-label{
+    font-size:.7rem;
+    font-weight:600;
+    text-transform:uppercase;
+    letter-spacing:.05em;
+    color:var(--text-secondary);
+    margin-bottom:4px;
+  }
+  .metric-value{
+    font-size:1.4rem;
+    font-weight:700;
+    letter-spacing:-.02em;
+    line-height:1.2;
+  }
+
+  /* ---------- Cards ---------- */
+  .card{
+    background:var(--bg-card);
+    border:1px solid var(--border);
+    border-radius:var(--radius);
+    padding:16px;
+    margin-bottom:16px;
+    box-shadow:var(--shadow);
+    overflow:hidden;
+  }
+  .card-header{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    margin-bottom:12px;
+  }
+  .card-title{
+    font-size:.95rem;
+    font-weight:600;
+    color:var(--text-primary);
+  }
+  .card-badge{
+    font-size:.7rem;
+    padding:2px 8px;
+    border-radius:20px;
+    font-weight:500;
+  }
+
+  /* ---------- Chart ---------- */
+  .chart-wrap{
+    position:relative;
+    width:100%;
+    height:240px;
+  }
+  @media(min-width:768px){
+    .chart-wrap{height:300px}
+  }
+
+  /* ---------- Tables ---------- */
+  .table-wrap{
+    overflow-x:auto;
+    -webkit-overflow-scrolling:touch;
+    scrollbar-width:thin;
+    scrollbar-color:var(--border) transparent;
+  }
+  .table-wrap::-webkit-scrollbar{height:6px}
+  .table-wrap::-webkit-scrollbar-track{background:transparent}
+  .table-wrap::-webkit-scrollbar-thumb{background:var(--border);border-radius:3px}
+
+  table{
+    width:100%;
+    border-collapse:collapse;
+    font-size:.8rem;
+    white-space:nowrap;
+  }
+  thead{position:sticky;top:0;z-index:1}
+  th{
+    text-align:left;
+    padding:8px 10px;
+    font-weight:600;
+    font-size:.7rem;
+    text-transform:uppercase;
+    letter-spacing:.04em;
+    color:var(--text-secondary);
+    background:var(--bg-card-alt);
+    border-bottom:1px solid var(--border);
+  }
+  td{
+    padding:7px 10px;
+    color:var(--text-primary);
+    border-bottom:1px solid var(--border);
+  }
+  tbody tr:nth-child(even){background:rgba(22,27,34,.6)}
+  tbody tr:hover{background:rgba(88,166,255,.06)}
+
+  /* ---------- Utility classes ---------- */
+  .positive{color:var(--green)}
+  .negative{color:var(--red)}
+  .muted{color:var(--text-secondary)}
+  .text-accent{color:var(--accent)}
+  a.text-accent{text-decoration:none}
+  a.text-accent:hover{text-decoration:underline}
+  .header-link{color:var(--accent);text-decoration:none;font-size:.8rem}
+  .header-link:hover{text-decoration:underline}
+  .btn-reset{
+    background:rgba(248,81,73,.15);
+    color:var(--red);
+    border:1px solid rgba(248,81,73,.3);
+    border-radius:6px;
+    padding:4px 12px;
+    font-size:.75rem;
+    font-weight:600;
+    cursor:pointer;
+    transition:background .15s;
+  }
+  .btn-reset:hover{background:rgba(248,81,73,.25)}
+  .reset-dropdown{position:relative}
+  .reset-menu{
+    display:none;
+    position:absolute;
+    right:0;top:110%;
+    background:var(--bg-card);
+    border:1px solid var(--border);
+    border-radius:var(--radius-sm);
+    box-shadow:0 4px 12px rgba(0,0,0,.5);
+    z-index:100;
+    min-width:180px;
+    overflow:hidden;
+  }
+  .reset-menu.open{display:block}
+  .reset-menu button{
+    display:block;
+    width:100%;
+    text-align:left;
+    background:none;
+    border:none;
+    color:var(--text-primary);
+    padding:10px 14px;
+    font-size:.8rem;
+    cursor:pointer;
+    border-bottom:1px solid var(--border);
+  }
+  .reset-menu button:last-child{border-bottom:none}
+  .reset-menu button:hover{background:rgba(248,81,73,.1);color:var(--red)}
+  /* Confirmation dialog */
+  .confirm-overlay{
+    display:none;position:fixed;top:0;left:0;right:0;bottom:0;
+    background:rgba(0,0,0,.6);z-index:200;
+    align-items:center;justify-content:center;
+  }
+  .confirm-overlay.open{display:flex}
+  .confirm-box{
+    background:var(--bg-card);
+    border:1px solid var(--border);
+    border-radius:var(--radius);
+    padding:24px;
+    max-width:380px;
+    width:90%;
+    text-align:center;
+    box-shadow:0 8px 24px rgba(0,0,0,.5);
+  }
+  .confirm-box h3{margin-bottom:8px;font-size:1rem}
+  .confirm-box p{color:var(--text-secondary);font-size:.85rem;margin-bottom:16px}
+  .confirm-actions{display:flex;gap:10px;justify-content:center}
+  .confirm-actions button{
+    padding:8px 20px;
+    border-radius:6px;
+    border:1px solid var(--border);
+    font-size:.8rem;
+    font-weight:600;
+    cursor:pointer;
+  }
+  .btn-cancel{background:var(--bg-card-alt);color:var(--text-primary)}
+  .btn-cancel:hover{background:var(--border)}
+  .btn-confirm-delete{background:rgba(248,81,73,.2);color:var(--red);border-color:rgba(248,81,73,.3)}
+  .btn-confirm-delete:hover{background:rgba(248,81,73,.35)}
+  .text-yellow{color:var(--yellow)}
+  .text-orange{color:var(--orange)}
+
+  .badge{
+    display:inline-block;
+    font-size:.65rem;
+    font-weight:600;
+    padding:2px 8px;
+    border-radius:20px;
+    text-transform:uppercase;
+    letter-spacing:.03em;
+  }
+  .badge-blue{background:var(--blue-badge);color:#fff}
+  .badge-green{background:var(--green-badge);color:#fff}
+  .badge-yellow{background:var(--yellow-badge);color:#fff}
+  .badge-red{background:rgba(248,81,73,.2);color:var(--red)}
+
+  .side-yes{color:var(--green);font-weight:600}
+  .side-no{color:var(--red);font-weight:600}
+
+  .no-data{
+    text-align:center;
+    padding:32px 16px;
+    color:var(--text-muted);
+    font-size:.85rem;
+  }
+
+  /* ---------- City groups ---------- */
+  .city-group{margin-bottom:12px}
+  .city-group-title{
+    font-size:.8rem;
+    font-weight:600;
+    color:var(--accent);
+    margin-bottom:6px;
+    padding-left:2px;
+  }
+  .market-chips{
+    display:flex;
+    flex-wrap:wrap;
+    gap:6px;
+  }
+  .market-chip{
+    background:var(--bg-card-alt);
+    border:1px solid var(--border);
+    border-radius:var(--radius-sm);
+    padding:6px 10px;
+    font-size:.72rem;
+    line-height:1.3;
+  }
+  .market-chip .ticker{font-weight:600;color:var(--text-primary)}
+  .market-chip .prices{color:var(--text-secondary);margin-top:2px}
+  .market-chip .prices .y{color:var(--green)}
+  .market-chip .prices .n{color:var(--red)}
+
+  /* ---------- Footer ---------- */
+  .footer{
+    text-align:center;
+    padding:24px 0 16px;
+    color:var(--text-muted);
+    font-size:.7rem;
+    border-top:1px solid var(--border);
+    margin-top:12px;
+  }
+
+  /* ---------- Loading shimmer ---------- */
+  .shimmer{
+    background:linear-gradient(90deg,var(--bg-card) 25%,var(--bg-card-alt) 50%,var(--bg-card) 75%);
+    background-size:200% 100%;
+    animation:shimmer 1.5s ease-in-out infinite;
+    border-radius:4px;
+    height:1.4rem;
+    width:80px;
+  }
+  @keyframes shimmer{
+    0%{background-position:200% 0}
+    100%{background-position:-200% 0}
+  }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <!-- ===== Header ===== -->
+  <header class="header">
+    <div class="header-left">
+      <h1><span>&#9889;</span> AetherBot</h1>
+    </div>
+    <div class="header-right">
+      <a href="/whitepaper" class="header-link">Whitepaper</a>
+      <a href="/strategy-lab" class="header-link">Strategy Lab</a>
+      <div class="reset-dropdown" id="reset-dropdown">
+        <button class="btn-reset" onclick="toggleResetMenu(event)">Reset Trades</button>
+        <div class="reset-menu" id="reset-menu">
+          <button onclick="resetTrades('today')">Reset Today's Trades</button>
+          <button onclick="resetTrades('all')">Reset All Trades</button>
+        </div>
+      </div>
+      <span id="last-updated">Updated: --</span>
+      <span><span class="status-dot" id="status-dot"></span></span>
+    </div>
+  </header>
+
+  <!-- ===== Key Metrics ===== -->
+  <div class="section-title">Key Metrics</div>
+  <div class="metrics-scroll" id="metrics-row">
+    <div class="metric-card">
+      <div class="metric-label">Bankroll</div>
+      <div class="metric-value" id="m-bankroll"><div class="shimmer"></div></div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Open Positions</div>
+      <div class="metric-value" id="m-positions"><div class="shimmer"></div></div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Today's Trades</div>
+      <div class="metric-value" id="m-trades-today"><div class="shimmer"></div></div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Win Rate</div>
+      <div class="metric-value" id="m-winrate"><div class="shimmer"></div></div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Total PnL</div>
+      <div class="metric-value" id="m-pnl"><div class="shimmer"></div></div>
+    </div>
+    <div class="metric-card">
+      <div class="metric-label">Brier Score</div>
+      <div class="metric-value" id="m-brier"><div class="shimmer"></div></div>
+    </div>
+  </div>
+
+  <!-- ===== PnL Chart ===== -->
+  <div class="section-title">Cumulative PnL</div>
+  <div class="card">
+    <div class="chart-wrap">
+      <canvas id="pnl-chart"></canvas>
+    </div>
+  </div>
+
+  <!-- ===== Open Positions ===== -->
+  <div class="section-title">Open Positions</div>
+  <div class="card">
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Market</th>
+            <th>Side</th>
+            <th>Qty</th>
+            <th>Price</th>
+            <th>Cost</th>
+            <th>Edge</th>
+            <th>City</th>
+          </tr>
+        </thead>
+        <tbody id="positions-body">
+          <tr><td colspan="7" class="no-data">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ===== Recent Trades ===== -->
+  <div class="section-title">Recent Trades</div>
+  <div class="card">
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Time</th>
+            <th>Market</th>
+            <th>Side</th>
+            <th>Qty</th>
+            <th>Price</th>
+            <th>PnL</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="trades-body">
+          <tr><td colspan="7" class="no-data">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ===== Latest Signals ===== -->
+  <div class="section-title">Latest Signals</div>
+  <div class="card">
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Market</th>
+            <th>City</th>
+            <th>Date</th>
+            <th>Model Prob</th>
+            <th>Mkt Price</th>
+            <th>Edge</th>
+            <th>Lead Hrs</th>
+          </tr>
+        </thead>
+        <tbody id="signals-body">
+          <tr><td colspan="7" class="no-data">Loading...</td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- ===== Active Markets ===== -->
+  <div class="section-title">Active Markets</div>
+  <div class="card" id="markets-card">
+    <div class="no-data">Loading...</div>
+  </div>
+
+  <!-- ===== Footer ===== -->
+  <div class="footer">
+    AetherBot &middot; Weather Prediction Markets &middot; Auto-refreshes every 30s
+  </div>
+
+</div>
+
+<!-- ===== Reset Confirmation Dialog ===== -->
+<div class="confirm-overlay" id="confirm-overlay">
+  <div class="confirm-box">
+    <h3 id="confirm-title">Reset Trades?</h3>
+    <p id="confirm-msg">This will delete all paper trades and reset bankroll to $10,000.</p>
+    <div class="confirm-actions">
+      <button class="btn-cancel" onclick="closeConfirm()">Cancel</button>
+      <button class="btn-confirm-delete" id="confirm-btn" onclick="confirmReset()">Reset</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ---------------------------------------------------------------------------
+//  Configuration
+// ---------------------------------------------------------------------------
+const API_BASE = '';          // same origin; change if API is elsewhere
+const REFRESH_MS = 30000;     // 30 seconds
+
+// ---------------------------------------------------------------------------
+//  Utility helpers
+// ---------------------------------------------------------------------------
+function $(id) { return document.getElementById(id); }
+
+function fmt$(v) {
+  if (v == null) return '--';
+  const n = Number(v);
+  const s = '$' + Math.abs(n).toFixed(2);
+  return n < 0 ? '-' + s : s;
+}
+
+function fmtPct(v, decimals) {
+  if (v == null) return '--';
+  decimals = decimals != null ? decimals : 1;
+  return (Number(v) * 100).toFixed(decimals) + '%';
+}
+
+function fmtPctRaw(v, decimals) {
+  if (v == null) return '--';
+  decimals = decimals != null ? decimals : 1;
+  return Number(v).toFixed(decimals) + '%';
+}
+
+function pnlClass(v) {
+  if (v == null) return '';
+  return Number(v) >= 0 ? 'positive' : 'negative';
+}
+
+function sideClass(s) {
+  if (!s) return '';
+  return s.toUpperCase() === 'YES' ? 'side-yes' : 'side-no';
+}
+
+function statusBadge(s) {
+  if (!s) return '';
+  var lower = s.toLowerCase();
+  if (lower === 'filled' || lower === 'open')   return '<span class="badge badge-blue">' + s + '</span>';
+  if (lower === 'settled' || lower === 'closed') return '<span class="badge badge-green">' + s + '</span>';
+  if (lower === 'pending')                        return '<span class="badge badge-yellow">' + s + '</span>';
+  return '<span class="badge">' + s + '</span>';
+}
+
+function edgeColor(edge) {
+  if (edge == null) return '';
+  var e = Math.abs(Number(edge));
+  // edge comes as fraction (0.xx) or percent — normalise
+  if (e < 1) e = e * 100;
+  if (e >= 20) return 'positive';
+  if (e >= 12) return 'text-yellow';
+  if (e >= 8)  return 'text-orange';
+  return 'muted';
+}
+
+function fmtEdge(edge) {
+  if (edge == null) return '--';
+  var e = Number(edge);
+  // if already in 0-1 range, convert to percent
+  if (Math.abs(e) < 1) e = e * 100;
+  return e.toFixed(1) + '%';
+}
+
+function relativeTime(ts) {
+  if (!ts) return '--';
+  var d;
+  if (typeof ts === 'string') {
+    d = new Date(ts);
+  } else {
+    d = new Date(ts);
+  }
+  if (isNaN(d.getTime())) return ts;
+
+  var now = Date.now();
+  var diff = Math.floor((now - d.getTime()) / 1000);
+  if (diff < 0) diff = 0;
+
+  if (diff < 60)   return diff + 's ago';
+  if (diff < 3600) return Math.floor(diff / 60) + ' min ago';
+  if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+  return Math.floor(diff / 86400) + 'd ago';
+}
+
+function nowStamp() {
+  return new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+}
+
+// Safe fetch wrapper
+async function safeFetch(path) {
+  try {
+    var resp = await fetch(API_BASE + path);
+    if (!resp.ok) throw new Error(resp.status);
+    return await resp.json();
+  } catch (e) {
+    console.warn('Fetch failed: ' + path, e);
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+//  Render: Key Metrics
+// ---------------------------------------------------------------------------
+async function loadStatus() {
+  var data = await safeFetch('/api/status');
+  if (!data) {
+    $('status-dot').classList.add('disconnected');
+    return;
+  }
+  $('status-dot').classList.remove('disconnected');
+
+  var br = data.bankroll;
+  $('m-bankroll').textContent = fmt$(br);
+  $('m-bankroll').className = 'metric-value ' + pnlClass(br - 10000);
+
+  $('m-positions').textContent = data.open_positions != null ? data.open_positions : '--';
+  $('m-positions').className = 'metric-value';
+
+  $('m-trades-today').textContent = data.today_trades != null ? data.today_trades : '--';
+  $('m-trades-today').className = 'metric-value';
+
+  var wr = data.win_rate;
+  if (wr != null) {
+    var wrPct = (Number(wr) <= 1 ? Number(wr) * 100 : Number(wr)).toFixed(1);
+    $('m-winrate').textContent = wrPct + '%';
+    $('m-winrate').className = 'metric-value ' + (Number(wrPct) >= 50 ? 'positive' : Number(wrPct) > 0 ? 'text-yellow' : 'muted');
+  } else {
+    $('m-winrate').textContent = '--';
+    $('m-winrate').className = 'metric-value muted';
+  }
+
+  var pnl = data.total_pnl;
+  $('m-pnl').textContent = fmt$(pnl);
+  $('m-pnl').className = 'metric-value ' + pnlClass(pnl);
+
+  var brier = data.brier_score;
+  if (brier != null) {
+    $('m-brier').textContent = Number(brier).toFixed(4);
+    $('m-brier').className = 'metric-value ' + (Number(brier) < 0.20 ? 'positive' : Number(brier) < 0.25 ? 'text-yellow' : 'negative');
+  } else {
+    $('m-brier').textContent = '--';
+    $('m-brier').className = 'metric-value muted';
+  }
+}
+
+// ---------------------------------------------------------------------------
+//  Render: PnL Chart
+// ---------------------------------------------------------------------------
+var pnlChart = null;
+
+async function loadPnlChart() {
+  var data = await safeFetch('/api/pnl/daily');
+  if (!data || !Array.isArray(data) || data.length === 0) {
+    if (!pnlChart) {
+      buildChart(
+        ['No data'],
+        [0]
+      );
+    }
+    return;
+  }
+
+  var labels = data.map(function(d) { return d.date; });
+  var values = data.map(function(d) { return Number(d.cumulative_pnl); });
+
+  if (pnlChart) {
+    pnlChart.data.labels = labels;
+    pnlChart.data.datasets[0].data = values;
+    pnlChart.update('none');
+  } else {
+    buildChart(labels, values);
+  }
+}
+
+function buildChart(labels, values) {
+  var ctx = $('pnl-chart').getContext('2d');
+
+  // Gradient fill
+  var grad = ctx.createLinearGradient(0, 0, 0, 280);
+  grad.addColorStop(0, 'rgba(63,185,80,0.25)');
+  grad.addColorStop(1, 'rgba(63,185,80,0)');
+
+  pnlChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: labels,
+      datasets: [{
+        label: 'Cumulative PnL',
+        data: values,
+        borderColor: '#3fb950',
+        backgroundColor: grad,
+        borderWidth: 2,
+        pointRadius: 0,
+        pointHitRadius: 8,
+        fill: true,
+        tension: 0.3
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#1c2128',
+          titleColor: '#e6edf3',
+          bodyColor: '#e6edf3',
+          borderColor: '#30363d',
+          borderWidth: 1,
+          padding: 10,
+          callbacks: {
+            label: function(ctx) { return 'PnL: ' + fmt$(ctx.parsed.y); }
+          }
+        }
+      },
+      scales: {
+        x: {
+          grid: { color: 'rgba(48,54,61,0.5)', drawBorder: false },
+          ticks: { color: '#8b949e', maxRotation: 45, font: { size: 10 } }
+        },
+        y: {
+          grid: { color: 'rgba(48,54,61,0.5)', drawBorder: false },
+          ticks: {
+            color: '#8b949e',
+            font: { size: 10 },
+            callback: function(v) { return fmt$(v); }
+          }
+        }
+      }
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+//  Render: Open Positions
+// ---------------------------------------------------------------------------
+async function loadPositions() {
+  var data = await safeFetch('/api/positions');
+  var tbody = $('positions-body');
+
+  if (!data || !Array.isArray(data) || data.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="7" class="no-data">No open positions</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = data.map(function(p) {
+    return '<tr>'
+      + '<td><a href="https://kalshi.com/markets/' + encodeURIComponent(p.market_ticker) + '" target="_blank" class="text-accent">' + esc(p.market_ticker) + '</a></td>'
+      + '<td class="' + sideClass(p.side) + '">' + esc(p.side) + '</td>'
+      + '<td>' + (p.contracts != null ? p.contracts : '--') + '</td>'
+      + '<td>' + fmt$(p.price) + '</td>'
+      + '<td>' + fmt$(p.cost) + '</td>'
+      + '<td class="' + edgeColor(p.edge) + '">' + fmtEdge(p.edge) + '</td>'
+      + '<td>' + esc(p.city || '') + '</td>'
+      + '</tr>';
+  }).join('');
+}
+
+// ---------------------------------------------------------------------------
+//  Render: Recent Trades
+// ---------------------------------------------------------------------------
+async function loadTrades() {
+  var data = await safeFetch('/api/trades/recent');
+  var tbody = $('trades-body');
+
+  if (!data || !Array.isArray(data) || data.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="7" class="no-data">No recent trades</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = data.slice(0, 20).map(function(t) {
+    return '<tr>'
+      + '<td class="muted">' + relativeTime(t.timestamp) + '</td>'
+      + '<td><a href="https://kalshi.com/markets/' + encodeURIComponent(t.market_ticker) + '" target="_blank" class="text-accent">' + esc(t.market_ticker) + '</a></td>'
+      + '<td class="' + sideClass(t.side) + '">' + esc(t.side) + '</td>'
+      + '<td>' + (t.contracts != null ? t.contracts : '--') + '</td>'
+      + '<td>' + fmt$(t.price) + '</td>'
+      + '<td class="' + pnlClass(t.pnl) + '">' + fmt$(t.pnl) + '</td>'
+      + '<td>' + statusBadge(t.status) + '</td>'
+      + '</tr>';
+  }).join('');
+}
+
+// ---------------------------------------------------------------------------
+//  Render: Latest Signals
+// ---------------------------------------------------------------------------
+async function loadSignals() {
+  var data = await safeFetch('/api/signals/latest');
+  var tbody = $('signals-body');
+
+  if (!data || !Array.isArray(data) || data.length === 0) {
+    tbody.innerHTML = '<tr><td colspan="7" class="no-data">No signals</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = data.map(function(s) {
+    var modelProb = s.calibrated_prob || s.blended_prob || s.ensemble_prob;
+    return '<tr>'
+      + '<td><a href="https://kalshi.com/markets/' + encodeURIComponent(s.market_ticker) + '" target="_blank" class="text-accent">' + esc(s.market_ticker) + '</a></td>'
+      + '<td>' + esc(s.city || '') + '</td>'
+      + '<td>' + esc(s.target_date || '') + '</td>'
+      + '<td>' + fmtPct(modelProb) + '</td>'
+      + '<td>' + fmtPct(s.market_price) + '</td>'
+      + '<td class="' + edgeColor(s.edge) + '">' + fmtEdge(s.edge) + '</td>'
+      + '<td>' + (s.lead_hours != null ? Number(s.lead_hours).toFixed(0) + 'h' : '--') + '</td>'
+      + '</tr>';
+  }).join('');
+}
+
+// ---------------------------------------------------------------------------
+//  Render: Active Markets
+// ---------------------------------------------------------------------------
+async function loadMarkets() {
+  var data = await safeFetch('/api/markets');
+  var card = $('markets-card');
+
+  if (!data || !Array.isArray(data) || data.length === 0) {
+    card.innerHTML = '<div class="no-data">No active markets</div>';
+    return;
+  }
+
+  // Group by city
+  var groups = {};
+  data.forEach(function(m) {
+    var city = m.city || 'Unknown';
+    if (!groups[city]) groups[city] = [];
+    groups[city].push(m);
+  });
+
+  var html = '';
+  Object.keys(groups).sort().forEach(function(city) {
+    html += '<div class="city-group">';
+    html += '<div class="city-group-title">' + esc(city) + '</div>';
+    html += '<div class="market-chips">';
+    groups[city].forEach(function(m) {
+      var tk = m.ticker || m.market_ticker || '';
+      // Build readable label from market data
+      var shortLabel;
+      if (m.is_above_contract && m.threshold != null) {
+        shortLabel = '>' + m.threshold + '\u00B0F';
+      } else if (m.bracket_low != null && m.bracket_high != null) {
+        shortLabel = m.bracket_low + '-' + m.bracket_high + '\u00B0F';
+      } else {
+        // Fallback: extract from ticker suffix
+        var suffix = tk.split('-').pop() || tk;
+        if (suffix.startsWith('T')) shortLabel = '>' + suffix.slice(1) + '\u00B0F';
+        else if (suffix.startsWith('B')) shortLabel = suffix.slice(1) + '\u00B0F';
+        else shortLabel = suffix;
+      }
+      var yp = m.yes_price != null ? (Number(m.yes_price) <= 1 ? (Number(m.yes_price) * 100).toFixed(0) : Number(m.yes_price).toFixed(0)) : '--';
+      var np = m.no_price != null ? (Number(m.no_price) <= 1 ? (Number(m.no_price) * 100).toFixed(0) : Number(m.no_price).toFixed(0)) : '--';
+      html += '<div class="market-chip" title="' + esc(tk) + '">'
+        + '<div class="ticker">' + esc(shortLabel) + '</div>'
+        + '<div class="prices">'
+        + '<span class="y">Y:' + yp + '</span> '
+        + '<span class="n">N:' + np + '</span>'
+        + '</div>'
+        + '</div>';
+    });
+    html += '</div></div>';
+  });
+
+  card.innerHTML = html;
+}
+
+// ---------------------------------------------------------------------------
+//  HTML escape
+// ---------------------------------------------------------------------------
+var _escEl;
+function esc(s) {
+  if (!s) return '';
+  if (!_escEl) _escEl = document.createElement('div');
+  _escEl.textContent = String(s);
+  return _escEl.innerHTML;
+}
+
+// ---------------------------------------------------------------------------
+//  Reset trades
+// ---------------------------------------------------------------------------
+var _pendingResetScope = null;
+
+function toggleResetMenu(e) {
+  e.stopPropagation();
+  var menu = $('reset-menu');
+  menu.classList.toggle('open');
+}
+
+// Close dropdown on outside click
+document.addEventListener('click', function() {
+  var menu = $('reset-menu');
+  if (menu) menu.classList.remove('open');
+});
+
+function resetTrades(scope) {
+  $('reset-menu').classList.remove('open');
+  _pendingResetScope = scope;
+  if (scope === 'today') {
+    $('confirm-title').textContent = "Reset Today's Trades?";
+    $('confirm-msg').textContent = "This will delete all trades placed today. This cannot be undone.";
+  } else {
+    $('confirm-title').textContent = "Reset All Trades?";
+    $('confirm-msg').textContent = "This will delete ALL paper trades, signals, and Brier scores. Bankroll resets to $10,000. This cannot be undone.";
+  }
+  $('confirm-overlay').classList.add('open');
+}
+
+function closeConfirm() {
+  $('confirm-overlay').classList.remove('open');
+  _pendingResetScope = null;
+}
+
+async function confirmReset() {
+  if (!_pendingResetScope) return;
+  var scope = _pendingResetScope;
+  closeConfirm();
+  try {
+    var resp = await fetch(API_BASE + '/api/trades/reset?scope=' + scope, { method: 'POST' });
+    var data = await resp.json();
+    if (data.status === 'ok') {
+      var msg = scope === 'today'
+        ? 'Cleared ' + data.trades_deleted + " today's trades."
+        : 'Cleared ' + data.trades_deleted + ' trades, ' + data.signals_deleted + ' signals, ' + data.brier_deleted + ' Brier scores.';
+      console.log('Reset: ' + msg);
+      refresh(); // Reload everything
+    } else {
+      console.error('Reset error:', data.error);
+    }
+  } catch (e) {
+    console.error('Reset fetch failed:', e);
+  }
+}
+
+// ---------------------------------------------------------------------------
+//  Master refresh
+// ---------------------------------------------------------------------------
+async function refresh() {
+  await Promise.all([
+    loadStatus(),
+    loadPnlChart(),
+    loadPositions(),
+    loadTrades(),
+    loadSignals(),
+    loadMarkets()
+  ]);
+  $('last-updated').textContent = 'Updated: ' + nowStamp();
+}
+
+// Initial load
+refresh();
+
+// Auto-refresh
+setInterval(refresh, REFRESH_MS);
+</script>
+</body>
+</html>
