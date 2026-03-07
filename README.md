@@ -1,3 +1,327 @@
+# ⚡ AetherBot
+
+**Quantitative weather prediction market bot for Kalshi KXHIGH temperature contracts.**
+
+AetherBot ingests multi-model weather forecasts, constructs calibrated probability distributions, detects statistical edges against market-implied probabilities, and executes trades using fractional Kelly criterion position sizing with layered risk controls. Named for the classical fifth element — the quintessence theorized to fill the upper atmosphere.
+
+---
+
+## Quick Start
+
+```bash
+# Clone
+git clone https://github.com/chriswiegand/AetherBot.git
+cd AetherBot
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Configure
+cp .env.example .env        # Add your Kalshi API credentials
+vi config/settings.yaml      # Tune strategy parameters
+vi config/cities.yaml        # City/station mapping
+
+# Backfill historical observations (2 years)
+python3 scripts/backfill_history.py --days 730
+
+# Run backtest
+python3 scripts/run_backtest.py --days 365
+
+# Start the bot (paper trading)
+python3 -m src.scheduler.runner
+
+# Launch the dashboard
+python3 dashboard/app.py
+# Open http://localhost:5050
+```
+
+---
+
+## Architecture
+
+```
+Data Sources        GFS Ensemble (31 members) · HRRR 3km · NWS · IEM CLI
+      │
+      ▼
+Data Pipeline       Fetch → Parse → Store → Filter
+      │
+      ▼
+Signal Engine       Ensemble Prob → HRRR Correct → Model Blend → Calibrate
+      │
+      ▼
+Strategy Layer      Edge Detect → Kelly Size → Risk Manage
+      │
+      ▼
+Execution           Paper Trader · Live Trader · Settlement
+```
+
+The bot runs a 5-minute core cycle: fetch latest forecasts → compute ensemble probabilities → apply HRRR correction → blend models → calibrate via isotonic regression → detect edges → size via fractional Kelly → check risk limits → execute trade.
+
+---
+
+## Market Coverage
+
+| City | Station | Ticker | Timezone |
+|------|---------|--------|----------|
+| New York | KNYC (Central Park) | `KXHIGHNY` | America/New_York |
+| Chicago | KMDW (Midway) | `KXHIGHCHI` | America/Chicago |
+| Miami | KMIA | `KXHIGHMIA` | America/New_York |
+| Los Angeles | KLAX | `KXHIGHLAX` | America/Los_Angeles |
+| Denver | KDEN | `KXHIGHDEN` | America/Denver |
+
+**Settlement**: NWS CLI "Maximum" observed value (integer °F). "Above X" = strictly greater than X.
+
+---
+
+## Data Sources
+
+| Source | Model | Frequency | Purpose |
+|--------|-------|-----------|---------|
+| Open-Meteo Ensemble | GFS 0.25° (31 members) | 60 min | Primary probability estimate |
+| Open-Meteo Forecast | HRRR 3km | 30 min | Short-range correction |
+| NWS API | Gridded forecast | 120 min | Human-machine blend |
+| IEM CLI | NWS Climate Reports | Daily 11:15 AM ET | Settlement ground truth |
+
+All data sources are **free and open** — no subscriptions required.
+
+---
+
+## Signal Pipeline
+
+1. **Ensemble Probability** — Count fraction of 31 GFS members exceeding threshold. Each member's max is rounded to integer °F to match NWS CLI convention.
+
+2. **HRRR Correction** — Shift ensemble members by lead-time-weighted fraction of HRRR-ensemble disagreement (45% weight at 0h, decaying to 5% at 48h+).
+
+3. **Model Blend** — Weighted average: Ensemble 60%, HRRR 25%, NWS 15%. Deterministic forecasts converted to probabilities via Gaussian error model (σ = 3°F).
+
+4. **Isotonic Calibration** — Non-parametric monotone mapping from raw to calibrated probabilities using scikit-learn's IsotonicRegression. Walk-forward refit every 50 trades.
+
+5. **Edge Detection** — Edge = P_model - P_market. Minimum 8% edge to trade (6% with HRRR confirmation). Pwin floor of 55%.
+
+---
+
+## Position Sizing
+
+**Fractional Kelly Criterion** (15% of full Kelly):
+
+```
+f* = (p × b - q) / b      where b = (1-price)/price, p = Pwin, q = 1-p
+f_sized = f* × 0.15
+dollar_amount = f_sized × bankroll
+```
+
+Kelly naturally sizes proportionally to both edge magnitude and win probability — larger edges and higher confidence produce bigger positions.
+
+### Risk Controls
+
+| Control | Limit | Purpose |
+|---------|-------|---------|
+| Daily Loss Limit | -$300 | Circuit breaker |
+| Max Concurrent Positions | 20 | Portfolio concentration |
+| Max Positions per City | 6 | Geographic concentration |
+| Max Positions per Date | 4 | Temporal concentration |
+| Max Position Size | 10% of bankroll or $1,000 | Single-trade cap |
+
+---
+
+## Dashboard
+
+The Flask dashboard (`http://localhost:5050`) provides:
+
+- **Main Dashboard** — Live portfolio view, open positions, PnL chart, trade history with hyperlinked tickers, Brier score tracking
+- **Strategy Lab** — Create/edit/activate named strategies, run per-strategy backtests with 6 chart types, parameter grid-search optimization
+- **Whitepaper** — Full technical overview with interactive charts
+
+---
+
+## Strategy Lab
+
+The Strategy Lab enables experimentation with different parameter sets:
+
+- **Strategy Management** — Create, clone, and activate named strategy configurations with custom edge thresholds, Kelly fractions, risk limits, and market filters
+- **Backtesting** — Run walk-forward backtests per strategy. Results include equity curves, PnL histograms, edge-bucket analysis, and per-city breakdowns
+- **Optimization** — Grid search across parameter ranges to find optimal configurations. Sort by Sharpe, PnL, win rate, or Brier score. One-click "Save as Strategy" from best results
+
+---
+
+## Project Structure
+
+```
+AetherBot/
+├── config/
+│   ├── settings.yaml          # Strategy & data source config
+│   └── cities.yaml            # City/station definitions
+├── src/
+│   ├── config/                # Settings & city loaders
+│   ├── data/                  # Models, DB, API clients
+│   │   ├── models.py          # SQLAlchemy ORM (11 tables)
+│   │   ├── ensemble_fetcher.py
+│   │   ├── hrrr_fetcher.py
+│   │   ├── nws_client.py
+│   │   ├── iem_client.py
+│   │   └── kalshi_markets.py
+│   ├── strategy/              # Signal processing
+│   │   ├── ensemble_calc.py   # Ensemble probability computation
+│   │   ├── model_blender.py   # Multi-model blending
+│   │   ├── calibrator.py      # Isotonic calibration
+│   │   ├── edge_detector.py   # Edge detection & filtering
+│   │   ├── kelly_sizer.py     # Kelly criterion position sizing
+│   │   └── risk_manager.py    # Portfolio risk controls
+│   ├── execution/             # Trade execution
+│   │   ├── paper_trader.py
+│   │   ├── live_trader.py
+│   │   └── settlement_checker.py
+│   ├── backtest/              # Backtesting framework
+│   │   ├── replay_engine.py   # Walk-forward backtest engine
+│   │   ├── strategy_runner.py # Per-strategy backtest wrapper
+│   │   └── optimizer.py       # Grid search parameter optimization
+│   ├── scheduler/             # APScheduler job definitions
+│   │   ├── runner.py          # Main entry point
+│   │   └── jobs.py            # Job definitions + active strategy loader
+│   └── monitoring/            # PnL tracking & alerts
+├── dashboard/
+│   ├── app.py                 # Flask API (22+ endpoints)
+│   ├── index.html             # Main dashboard
+│   ├── strategy-lab.html      # Strategy Lab page
+│   └── whitepaper.html        # Technical overview
+├── scripts/
+│   ├── backfill_history.py    # Historical data loader
+│   ├── run_backtest.py        # CLI backtest runner
+│   ├── smoke_test.py          # End-to-end verification
+│   ├── check_status.py        # System health check
+│   └── reset_paper_trades.py  # Paper trade reset utility
+├── journal/                   # Development journal
+│   ├── README.md
+│   └── 2026-03-06.md
+├── docs/
+│   └── whitepaper.md          # Full whitepaper (markdown)
+└── data/
+    └── weather_bot.db         # SQLite database (gitignored)
+```
+
+---
+
+## Database Schema
+
+| Table | Purpose | Volume |
+|-------|---------|--------|
+| `ensemble_forecasts` | GFS member daily maxes | ~310/city/run |
+| `hrrr_forecasts` | HRRR deterministic max | ~2/city/run |
+| `nws_forecasts` | NWS 7-day high/low | ~7/city/fetch |
+| `observations` | CLI ground truth | 1/city/day |
+| `kalshi_markets` | Active contracts | ~12/city (3x/day) |
+| `trades` | Paper and live trades | Variable |
+| `brier_scores` | Forecast evaluation | 1/settled trade |
+| `strategies` | Named strategy configs | User-defined |
+| `backtest_runs` | Backtest results + charts | Per strategy |
+| `optimization_runs` | Grid search results | Per sweep |
+
+---
+
+## Scheduler Jobs
+
+| Job | Trigger | Frequency |
+|-----|---------|-----------|
+| Market Discovery | Cron | 6 AM, 12 PM, 6 PM ET |
+| GFS Ensemble Fetch | Interval | Every 60 minutes |
+| HRRR Fetch | Interval | Every 30 minutes |
+| NWS Forecast Fetch | Interval | Every 120 minutes |
+| **Scan & Trade** | Interval | **Every 5 minutes** |
+| Settlement Check | Cron | 11:15 AM ET daily |
+| Daily Report | Cron | 12:00 PM ET daily |
+
+---
+
+## Backtest Results
+
+Walk-forward backtest over 2 years of historical data (5 cities, synthetic markets):
+
+| Metric | Value | Target |
+|--------|-------|--------|
+| Total Trades | 1,827 | — |
+| Win Rate | 71.8% | > 50% |
+| Gross PnL | +$6,664 | — |
+| Sharpe Ratio | 15.25 | > 1.0 |
+| Brier Score | 0.1235 | < 0.20 |
+| Final Bankroll | $16,664 | — |
+
+> **Note**: The Sharpe ratio is inflated because synthetic markets are priced at climatological probabilities. Live performance will be lower, but the Brier score of 0.1235 indicates genuine forecast skill.
+
+---
+
+## Configuration
+
+```yaml
+strategy:
+  edge_threshold: 0.08          # 8% minimum edge to trade
+  min_edge_hrrr_confirm: 0.06   # 6% with HRRR confirmation
+  min_model_prob: 0.55          # 55% Pwin floor
+  fractional_kelly: 0.15        # 15% of full Kelly
+  max_position_pct: 0.10        # 10% of bankroll per trade
+  max_position_dollars: 1000    # $1,000 absolute cap
+  daily_loss_limit: 300         # $300 daily loss limit
+  max_concurrent_positions: 20
+  max_positions_per_city: 6
+  max_positions_per_date: 4
+  min_price: 0.08
+  max_price: 0.92
+  max_lead_hours: 72
+
+model_weights:
+  gfs_ensemble: 0.60
+  hrrr: 0.25
+  nws: 0.15
+```
+
+---
+
+## Tech Stack
+
+| Component | Technology |
+|-----------|-----------|
+| Language | Python 3.11+ (~7,500 LOC) |
+| Database | SQLite (WAL mode) |
+| ORM | SQLAlchemy |
+| Scheduler | APScheduler |
+| HTTP Client | httpx |
+| Calibration | scikit-learn (isotonic regression) |
+| Statistics | scipy (normal CDF) |
+| Auth | cryptography (RSA-PSS for Kalshi API) |
+| Dashboard | Flask + Chart.js |
+
+---
+
+## Domain Knowledge
+
+A few non-obvious details that are critical for correct settlement:
+
+- **"Above X" contracts use strict inequality**: 51°F settles YES for "above 50". Exactly 50 settles NO.
+- **NWS CLI uses Local Standard Time year-round**: During DST, the civil clock shifts but the observation window does not. UTC boundaries remain fixed.
+- **KNYC is Central Park, not an airport**: Unlike most stations, New York's settlement station is in Manhattan.
+- **KMDW is Midway, not O'Hare**: Chicago uses the South Side airport station.
+- **GFS ensemble has 31 members** (member00–member30), not 30.
+
+---
+
+## License
+
+Private repository. All rights reserved.
+
+---
+
+*AetherBot v1.0 · March 2026 · Built with Python, weather models, and a healthy respect for atmospheric chaos.*
+
+---
+---
+
+# Technical Whitepaper (Full HTML)
+
+The complete interactive whitepaper with charts is served at `/whitepaper` on the dashboard. The raw HTML follows below.
+
+<details>
+<summary><strong>Click to expand: AetherBot Technical Overview (whitepaper.html)</strong></summary>
+
+```html
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -526,8 +850,8 @@
         <table>
           <thead><tr><th>Component</th><th>Technology</th><th>Notes</th></tr></thead>
           <tbody>
-            <tr><td>Language</td><td>Python 3.11+</td><td>~5,200 LOC across 51 files</td></tr>
-            <tr><td>Database</td><td>SQLite (WAL mode)</td><td>8 tables, concurrent reads</td></tr>
+            <tr><td>Language</td><td>Python 3.11+</td><td>~7,500 LOC across 55+ files</td></tr>
+            <tr><td>Database</td><td>SQLite (WAL mode)</td><td>11 tables, concurrent reads</td></tr>
             <tr><td>ORM</td><td>SQLAlchemy</td><td>Declarative models</td></tr>
             <tr><td>Scheduler</td><td>APScheduler</td><td>Blocking + Interval/Cron triggers</td></tr>
             <tr><td>HTTP Client</td><td>httpx</td><td>Async-capable, sync usage</td></tr>
@@ -557,6 +881,9 @@
             <tr><td class="text-accent">signals</td><td>Model probs + edges</td><td>1/market/scan</td></tr>
             <tr><td class="text-accent">trades</td><td>Paper and live trades</td><td>Variable</td></tr>
             <tr><td class="text-accent">brier_scores</td><td>Forecast evaluation</td><td>1/settled trade</td></tr>
+            <tr><td class="text-accent">strategies</td><td>Named strategy configs</td><td>User-defined</td></tr>
+            <tr><td class="text-accent">backtest_runs</td><td>Backtest result history</td><td>Per strategy</td></tr>
+            <tr><td class="text-accent">optimization_runs</td><td>Grid search results</td><td>Per sweep</td></tr>
           </tbody>
         </table>
       </div>
@@ -698,3 +1025,6 @@
 </script>
 </body>
 </html>
+```
+
+</details>
