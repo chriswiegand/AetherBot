@@ -56,6 +56,17 @@
   .btn-primary:hover{background:#388bfd}
   .status-text{font-size:.75rem;color:var(--text-muted);margin-left:auto}
 
+  /* Sizing controls */
+  .sizing-controls{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:12px 16px;margin-bottom:16px;font-size:.78rem}
+  .sizing-controls label{font-size:.68rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.04em;font-weight:600}
+  .sizing-controls input[type="number"]{background:var(--bg-canvas);border:1px solid var(--border);border-radius:6px;color:var(--text-primary);padding:6px 10px;font-size:.82rem;width:90px;text-align:right}
+  .sizing-controls input[type="number"]:focus{outline:none;border-color:var(--accent)}
+  .sizing-controls input[type="range"]{width:100px;accent-color:var(--accent);cursor:pointer}
+  .sizing-controls .range-group{display:flex;align-items:center;gap:6px}
+  .sizing-controls .range-value{font-family:'SF Mono',Monaco,Consolas,monospace;font-size:.82rem;color:var(--accent);min-width:42px;text-align:right}
+  .sizing-controls .toggle-label{display:flex;align-items:center;gap:6px;cursor:pointer;user-select:none}
+  .sizing-controls .toggle-label input[type="checkbox"]{accent-color:var(--accent);width:15px;height:15px;cursor:pointer}
+
   /* Pipeline diagram */
   .pipeline{display:flex;align-items:center;justify-content:center;gap:3px;flex-wrap:nowrap;padding:16px 4px;overflow-x:auto}
   .pipe-step{background:var(--bg-card-alt);border:1px solid var(--border);border-radius:var(--radius-sm);padding:8px 10px;text-align:center;min-width:80px;flex-shrink:0;transition:border-color .2s,box-shadow .2s}
@@ -288,17 +299,32 @@
   <!-- ===== Section 6-7: Kelly Sizing & Risk ===== -->
   <div class="section-title"><span class="step-num">7-8</span> Kelly Sizing &amp; Risk Management</div>
   <div class="card">
-    <div class="formula">
-      <span class="label">Fractional Kelly Criterion</span>
+    <div class="formula" id="kelly-formula">
+      <span class="label">Kelly Criterion</span>
       f* = (p &middot; b &minus; q) / b&ensp;&ensp;where b = (1 &minus; price) / price,&ensp;p = P<sub>win</sub>,&ensp;q = 1 &minus; p<br>
-      f<sub>sized</sub> = f* &times; 0.15&ensp;&ensp;|&ensp;&ensp;$ = f<sub>sized</sub> &times; bankroll&ensp;&ensp;|&ensp;&ensp;contracts = floor($ / price)
+      <span id="formula-sizing">f<sub>sized</sub> = f* &times; 0.15&ensp;&ensp;|&ensp;&ensp;$ = f<sub>sized</sub> &times; bankroll&ensp;&ensp;|&ensp;&ensp;contracts = floor($ / price)</span>
     </div>
+  </div>
+  <div class="card sizing-controls" id="sizing-controls">
+    <label>Kelly Fraction</label>
+    <div class="range-group">
+      <input type="range" id="kelly-frac-slider" min="5" max="100" value="15" step="5" oninput="onSizingChange()">
+      <span class="range-value" id="kelly-frac-label">15%</span>
+    </div>
+    <label>Daily Budget</label>
+    <input type="number" id="daily-budget" value="1000" min="10" step="50" onchange="onSizingChange()">
+    <label>Max Bet</label>
+    <input type="number" id="max-bet" value="500" min="5" step="25" onchange="onSizingChange()">
+    <label class="toggle-label">
+      <input type="checkbox" id="uncapped-toggle" onchange="onSizingChange()">
+      Full Kelly (uncapped)
+    </label>
   </div>
   <div class="card">
     <div class="card-title">Position Sizing</div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>Market</th><th>Side</th><th>P<sub>win</sub></th><th>Odds (b)</th><th>Full Kelly</th><th>Frac (15%)</th><th>Contracts</th><th>Price</th><th>Cost</th><th>EV/Contract</th></tr></thead>
+        <thead><tr><th>Market</th><th>Side</th><th>P<sub>win</sub></th><th>Odds (b)</th><th>Full Kelly</th><th id="frac-header">Frac (15%)</th><th>Contracts</th><th>Price</th><th>Cost</th><th>EV/Contract</th></tr></thead>
         <tbody id="kelly-body">
           <tr><td colspan="10" class="text-muted">Awaiting analysis...</td></tr>
         </tbody>
@@ -708,26 +734,19 @@ function renderEdge(data){
 }
 
 // ---------------------------------------------------------------------------
-//  Section 6-7: Kelly Sizing + Risk
+//  Section 6-7: Kelly Sizing + Risk (dynamic recalculation)
 // ---------------------------------------------------------------------------
+var _kellyData = null;  // cached for re-render on control change
+
 function renderKelly(data){
+  _kellyData = data;
   if(!data || !data.trades || !data.trades.length){
     $('kelly-body').innerHTML = '<tr><td colspan="10" class="text-muted">No tradeable edges detected for this city/date.</td></tr>';
     return;
   }
-  var kb = $('kelly-body');
-  kb.innerHTML = data.trades.map(function(t){
-    var ticker = t.market_ticker.split('-').pop();
-    var sideClass = t.side==='yes' ? 'text-green' : 'text-red';
-    var evClass = t.ev_per_contract > 0 ? 'text-green' : 'text-red';
-    return '<tr><td>'+ticker+'</td><td class="'+sideClass+'">'+t.side.toUpperCase()+'</td>'+
-      '<td>'+(t.p_win*100).toFixed(1)+'%</td><td>'+t.odds_b.toFixed(3)+'</td>'+
-      '<td>'+(t.full_kelly*100).toFixed(1)+'%</td><td>'+(t.fractional_kelly*100).toFixed(2)+'%</td>'+
-      '<td>'+t.contracts+'</td><td>$'+t.price.toFixed(2)+'</td><td>$'+t.total_cost.toFixed(2)+'</td>'+
-      '<td class="'+evClass+'">$'+(t.ev_per_contract).toFixed(4)+'</td></tr>';
-  }).join('');
+  recalcKelly();
 
-  // Risk grid
+  // Risk grid (static from DB — not affected by sliders)
   var rc = data.risk_checks;
   var grid = $('risk-grid');
   var items = [
@@ -744,8 +763,83 @@ function renderKelly(data){
   }).join('');
 }
 
+function getSizingParams(){
+  var uncapped = $('uncapped-toggle').checked;
+  var frac = uncapped ? 1.0 : (parseFloat($('kelly-frac-slider').value) / 100);
+  var budget = parseFloat($('daily-budget').value) || 1000;
+  var maxBet = parseFloat($('max-bet').value) || Infinity;
+  if(uncapped) maxBet = Infinity;
+  return {frac:frac, budget:budget, maxBet:maxBet, uncapped:uncapped};
+}
+
+function onSizingChange(){
+  var p = getSizingParams();
+  // Update slider label
+  $('kelly-frac-label').textContent = p.uncapped ? '100%' : (p.frac*100).toFixed(0)+'%';
+  // Disable slider + inputs when uncapped
+  $('kelly-frac-slider').disabled = p.uncapped;
+  $('daily-budget').disabled = p.uncapped;
+  $('max-bet').disabled = p.uncapped;
+  // Update header
+  $('frac-header').innerHTML = p.uncapped ? 'Sized (100%)' : 'Frac ('+(p.frac*100).toFixed(0)+'%)';
+  // Update formula
+  if(p.uncapped){
+    $('formula-sizing').innerHTML = 'f<sub>sized</sub> = f*&ensp;&ensp;|&ensp;&ensp;$ = f* &times; bankroll&ensp;&ensp;|&ensp;&ensp;contracts = floor($ / price)&ensp;&ensp;<span style="color:var(--yellow)">[FULL KELLY — no caps]</span>';
+  } else {
+    $('formula-sizing').innerHTML = 'f<sub>sized</sub> = f* &times; '+(p.frac).toFixed(2)+'&ensp;&ensp;|&ensp;&ensp;$ = min(f<sub>sized</sub> &times; bankroll, $'+p.maxBet.toFixed(0)+')&ensp;&ensp;|&ensp;&ensp;budget $'+p.budget.toFixed(0)+' split proportionally';
+  }
+  recalcKelly();
+  recalcTradeDecisions();
+}
+
+// Shared proportional sizing — allocates budget fairly across all trades
+function computeSizing(trades, params, bankroll){
+  // Step 1: raw Kelly dollar sizes with per-trade max-bet cap
+  var sized = trades.map(function(t){
+    var fracKelly = t.full_kelly * params.frac;
+    var dollarSize = fracKelly * bankroll;
+    if(!params.uncapped) dollarSize = Math.min(dollarSize, params.maxBet);
+    return {t:t, fracKelly:fracKelly, dollarSize:dollarSize};
+  });
+  // Step 2: if total exceeds daily budget, scale ALL trades proportionally
+  if(!params.uncapped){
+    var totalDollars = sized.reduce(function(sum,s){return sum+s.dollarSize;},0);
+    if(totalDollars > params.budget){
+      var scale = params.budget / totalDollars;
+      sized.forEach(function(s){s.dollarSize *= scale;});
+    }
+  }
+  // Step 3: convert to contracts
+  sized.forEach(function(s){
+    var price = s.t.price || 0.01;
+    s.contracts = Math.floor(s.dollarSize / price);
+    s.cost = s.contracts * price;
+  });
+  return sized;
+}
+
+function recalcKelly(){
+  if(!_kellyData || !_kellyData.trades || !_kellyData.trades.length) return;
+  var p = getSizingParams();
+  var bankroll = _kellyData.bankroll || 10000;
+  var sized = computeSizing(_kellyData.trades, p, bankroll);
+
+  var rows = sized.map(function(s){
+    var t = s.t;
+    var ticker = t.market_ticker.split('-').pop();
+    var sideClass = t.side==='yes' ? 'text-green' : 'text-red';
+    var evClass = t.ev_per_contract > 0 ? 'text-green' : 'text-red';
+    return '<tr><td>'+ticker+'</td><td class="'+sideClass+'">'+t.side.toUpperCase()+'</td>'+
+      '<td>'+(t.p_win*100).toFixed(1)+'%</td><td>'+t.odds_b.toFixed(3)+'</td>'+
+      '<td>'+(t.full_kelly*100).toFixed(1)+'%</td><td>'+(s.fracKelly*100).toFixed(2)+'%</td>'+
+      '<td>'+s.contracts+'</td><td>$'+(t.price||0.01).toFixed(2)+'</td><td>$'+s.cost.toFixed(2)+'</td>'+
+      '<td class="'+evClass+'">$'+(t.ev_per_contract).toFixed(4)+'</td></tr>';
+  });
+  $('kelly-body').innerHTML = rows.join('');
+}
+
 // ---------------------------------------------------------------------------
-//  Section 8: Trade Decisions + EV Chart
+//  Section 8: Trade Decisions + EV Chart (uses dynamic sizing)
 // ---------------------------------------------------------------------------
 function renderTradeDecisions(data){
   destroyChart('ev');
@@ -753,30 +847,39 @@ function renderTradeDecisions(data){
     $('trades-body').innerHTML = '<tr><td colspan="11" class="text-muted">No trades for this city/date.</td></tr>';
     return;
   }
-  var trades = data.trades;
+  recalcTradeDecisions();
+}
 
-  // EV chart
-  var labels = trades.map(function(t){return t.market_ticker.split('-').pop();});
-  var evs = trades.map(function(t){return t.ev_per_contract;});
-  var colors = evs.map(function(v){return v >= 0 ? 'rgba(63,185,80,0.7)' : 'rgba(248,81,73,0.7)';});
-  var borders = evs.map(function(v){return v >= 0 ? 'rgba(63,185,80,1)' : 'rgba(248,81,73,1)';});
+function recalcTradeDecisions(){
+  if(!_kellyData || !_kellyData.trades || !_kellyData.trades.length) return;
+  var sp = getSizingParams();
+  var bankroll = _kellyData.bankroll || 10000;
+  var sized = computeSizing(_kellyData.trades, sp, bankroll);
+
+  // EV chart — scale EV by number of contracts
+  destroyChart('ev');
+  var labels = sized.map(function(s){return s.t.market_ticker.split('-').pop();});
+  var evTotals = sized.map(function(s){return s.t.ev_per_contract * s.contracts;});
+  var colors = evTotals.map(function(v){return v >= 0 ? 'rgba(63,185,80,0.7)' : 'rgba(248,81,73,0.7)';});
+  var borders = evTotals.map(function(v){return v >= 0 ? 'rgba(63,185,80,1)' : 'rgba(248,81,73,1)';});
 
   var ctx = $('ev-chart').getContext('2d');
   charts.ev = new Chart(ctx,{
     type:'bar',
-    data:{labels:labels,datasets:[{label:'EV/Contract',data:evs,backgroundColor:colors,borderColor:borders,borderWidth:1,borderRadius:3}]},
+    data:{labels:labels,datasets:[{label:'Total EV',data:evTotals,backgroundColor:colors,borderColor:borders,borderWidth:1,borderRadius:3}]},
     options:{responsive:true,maintainAspectRatio:false,
-      plugins:{legend:{display:false},tooltip:{...CHART_DEFAULTS.tooltip,callbacks:{label:function(ctx){return 'EV: $'+ctx.raw.toFixed(4);}}}},
+      plugins:{legend:{display:false},tooltip:{...CHART_DEFAULTS.tooltip,callbacks:{label:function(ctx){return 'Total EV: $'+ctx.raw.toFixed(2)+' ('+sized[ctx.dataIndex].contracts+' contracts)';}}}},
       scales:{
         x:{grid:{display:false},ticks:{color:CHART_DEFAULTS.tickColor,font:{size:10,weight:'bold'}}},
-        y:{grid:{color:CHART_DEFAULTS.gridColor},ticks:{color:CHART_DEFAULTS.tickColor,font:CHART_DEFAULTS.tickFont,callback:function(v){return '$'+v.toFixed(2);}},title:{display:true,text:'Expected Value ($)',color:'#8b949e',font:{size:11}}}
+        y:{grid:{color:CHART_DEFAULTS.gridColor},ticks:{color:CHART_DEFAULTS.tickColor,font:CHART_DEFAULTS.tickFont,callback:function(v){return '$'+v.toFixed(0);}},title:{display:true,text:'Total Expected Value ($)',color:'#8b949e',font:{size:11}}}
       }
     }
   });
 
   // Full trade table
   var tb = $('trades-body');
-  tb.innerHTML = trades.map(function(t){
+  tb.innerHTML = sized.map(function(s){
+    var t = s.t;
     var ticker = t.market_ticker.split('-').pop();
     var sideClass = t.side==='yes' ? 'text-green' : 'text-red';
     var edgeClass = t.edge > 0 ? 'text-green' : 'text-red';
@@ -785,7 +888,7 @@ function renderTradeDecisions(data){
       '<td>'+(t.model_prob*100).toFixed(1)+'%</td><td>'+(t.market_price*100).toFixed(1)+'%</td>'+
       '<td class="'+edgeClass+'">'+(t.edge*100).toFixed(1)+'%</td>'+
       '<td>'+(t.full_kelly*100).toFixed(1)+'%</td>'+
-      '<td>'+t.contracts+'</td><td>$'+t.price.toFixed(2)+'</td><td>$'+t.total_cost.toFixed(2)+'</td>'+
+      '<td>'+s.contracts+'</td><td>$'+t.price.toFixed(2)+'</td><td>$'+s.cost.toFixed(2)+'</td>'+
       '<td class="'+evClass+'">$'+t.ev_per_contract.toFixed(4)+'</td>'+
       '<td><span class="badge badge-green">'+t.status.toUpperCase()+'</span></td></tr>';
   }).join('');
