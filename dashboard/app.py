@@ -9,10 +9,12 @@ Usage:
 """
 
 import json
+import logging
 import sqlite3
 import sys
+import threading
 import time
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 from pathlib import Path
 
 from flask import Flask, jsonify, request, send_from_directory
@@ -22,6 +24,15 @@ PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
+from src.config.settings import load_settings
+from src.config.cities import load_cities
+from src.data.ensemble_fetcher import EnsembleFetcher
+from src.data.hrrr_fetcher import HRRRFetcher
+from src.data.nws_client import NWSClient
+from src.data.freshness import DataFreshnessTracker
+
+logger = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
 # Paths
 # ---------------------------------------------------------------------------
@@ -30,6 +41,90 @@ DB_PATH = PROJECT_ROOT / "data" / "weather_bot.db"
 STATIC_DIR = Path(__file__).resolve().parent  # dashboard/
 
 INITIAL_BANKROLL = 10_000.0
+
+# ---------------------------------------------------------------------------
+# Direct-fetch infrastructure (dashboard calls fetchers without the bot)
+# ---------------------------------------------------------------------------
+
+_refresh_locks = {s: threading.Lock() for s in ("gfs", "hrrr", "nws")}
+_refresh_status: dict[str, dict] = {
+    s: {"running": False, "last_result": None} for s in ("gfs", "hrrr", "nws")
+}
+
+
+def _do_direct_fetch(source: str):
+    """Run a data fetch in a background thread.
+
+    Each fetcher is standalone — no BotContext needed.
+    Creates its own fetcher instance, iterates all 5 cities,
+    and closes the HTTP client when done.
+    """
+    lock = _refresh_locks[source]
+    if not lock.acquire(blocking=False):
+        logger.info("Refresh for %s already in progress — skipping", source)
+        return
+
+    _refresh_status[source]["running"] = True
+    try:
+        settings = load_settings()
+        cities = load_cities()
+        total_records = 0
+        errors = []
+
+        if source == "gfs":
+            fetcher = EnsembleFetcher(settings)
+            try:
+                for city_name, city_config in cities.items():
+                    try:
+                        results = fetcher.fetch_and_store(city_config)
+                        total_records += len(results) if results else 0
+                    except Exception as e:
+                        errors.append(f"{city_name}: {e}")
+                        logger.error("GFS fetch failed for %s: %s", city_name, e)
+            finally:
+                fetcher.close()
+
+        elif source == "hrrr":
+            fetcher = HRRRFetcher(settings)
+            try:
+                for city_name, city_config in cities.items():
+                    try:
+                        results = fetcher.fetch_and_store(city_config)
+                        total_records += len(results) if results else 0
+                    except Exception as e:
+                        errors.append(f"{city_name}: {e}")
+                        logger.error("HRRR fetch failed for %s: %s", city_name, e)
+            finally:
+                fetcher.close()
+
+        elif source == "nws":
+            client = NWSClient(settings)
+            try:
+                for city_name, city_config in cities.items():
+                    try:
+                        results = client.fetch_and_store(city_config)
+                        total_records += len(results) if results else 0
+                    except Exception as e:
+                        errors.append(f"{city_name}: {e}")
+                        logger.error("NWS fetch failed for %s: %s", city_name, e)
+            finally:
+                client.close()
+
+        _refresh_status[source]["last_result"] = {
+            "records": total_records,
+            "errors": errors,
+            "completed_at": datetime.now(timezone.utc).isoformat(),
+        }
+        logger.info("Direct refresh %s complete: %d records, %d errors",
+                     source, total_records, len(errors))
+
+    except Exception as e:
+        _refresh_status[source]["last_result"] = {"error": str(e)}
+        logger.error("Direct refresh %s failed: %s", source, e)
+    finally:
+        _refresh_status[source]["running"] = False
+        lock.release()
+
 
 # ---------------------------------------------------------------------------
 # Flask app
@@ -1273,20 +1368,41 @@ def api_data_freshness():
 
 @app.route("/api/refresh/<source>", methods=["POST"])
 def api_manual_refresh(source):
-    """Trigger manual data refresh by writing a signal file.
-    The bot's smart_data_fetch watchdog will pick it up on its next cycle."""
+    """Trigger direct data refresh in a background thread.
+
+    Calls the fetchers for all 5 cities — no bot process needed.
+    Returns immediately; poll /api/refresh/<source>/status for progress.
+    """
     valid_sources = {"gfs", "hrrr", "nws"}
     if source not in valid_sources:
         return jsonify({"error": f"Invalid source. Use one of: {valid_sources}"}), 400
 
-    try:
-        signal_dir = PROJECT_ROOT / "data" / "signals"
-        signal_dir.mkdir(parents=True, exist_ok=True)
-        signal_file = signal_dir / f"refresh_{source}.signal"
-        signal_file.write_text(datetime.utcnow().isoformat() + "Z")
-        return jsonify({"status": "queued", "source": source})
-    except Exception as e:
-        return jsonify({"error": str(e)}), 500
+    if _refresh_status[source]["running"]:
+        return jsonify({"status": "already_running", "source": source})
+
+    thread = threading.Thread(
+        target=_do_direct_fetch,
+        args=(source,),
+        daemon=True,
+        name=f"refresh-{source}",
+    )
+    thread.start()
+
+    return jsonify({"status": "started", "source": source})
+
+
+@app.route("/api/refresh/<source>/status")
+def api_refresh_status(source):
+    """Check status of a running or completed refresh."""
+    valid_sources = {"gfs", "hrrr", "nws"}
+    if source not in valid_sources:
+        return jsonify({"error": f"Invalid source"}), 400
+
+    return jsonify({
+        "source": source,
+        "running": _refresh_status[source]["running"],
+        "last_result": _refresh_status[source]["last_result"],
+    })
 
 
 # ===========================================================================
@@ -2110,7 +2226,9 @@ def api_tracker_detail(market_ticker):
         # 3. Signal history (model probability trajectory)
         cur.execute("""
             SELECT computed_at, calibrated_prob, ensemble_prob,
-                   market_yes_price, raw_edge, abs_edge, lead_hours
+                   hrrr_prob, nws_prob, blended_prob,
+                   market_yes_price, raw_edge, abs_edge, lead_hours,
+                   ensemble_run, hrrr_run
             FROM signals
             WHERE market_ticker = ?
             ORDER BY computed_at ASC
@@ -2141,6 +2259,62 @@ def api_tracker_detail(market_ticker):
         return jsonify({"error": str(e)}), 500
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Auto-refresh background thread
+# ---------------------------------------------------------------------------
+
+def _auto_refresh_loop():
+    """Periodically check data freshness and trigger fetches when stale.
+
+    Uses the existing DataFreshnessTracker to decide when new model data
+    should be available.  Runs every 10 minutes in a daemon thread.
+    """
+    import time as _time
+    CHECK_INTERVAL = 600  # 10 minutes
+
+    # Wait 30 seconds after startup before first check
+    _time.sleep(30)
+
+    while True:
+        try:
+            settings = load_settings()
+            tracker = DataFreshnessTracker(
+                DB_PATH,
+                gfs_lag_hours=getattr(
+                    settings.scheduler, "gfs_availability_lag_hours", 4.5
+                ),
+                hrrr_lag_hours=getattr(
+                    settings.scheduler, "hrrr_availability_lag_hours", 1.0
+                ),
+            )
+
+            if tracker.should_fetch_gfs():
+                logger.info("[auto-refresh] GFS data stale — triggering fetch")
+                _do_direct_fetch("gfs")
+
+            if tracker.should_fetch_hrrr():
+                logger.info("[auto-refresh] HRRR data stale — triggering fetch")
+                _do_direct_fetch("hrrr")
+
+            if tracker.should_fetch_nws():
+                logger.info("[auto-refresh] NWS data stale — triggering fetch")
+                _do_direct_fetch("nws")
+
+        except Exception as e:
+            logger.error("[auto-refresh] Error: %s", e)
+
+        _time.sleep(CHECK_INTERVAL)
+
+
+# Start auto-refresh thread (daemon=True so it dies with the process)
+_auto_refresh_thread = threading.Thread(
+    target=_auto_refresh_loop,
+    daemon=True,
+    name="auto-refresh",
+)
+_auto_refresh_thread.start()
 
 
 # ---------------------------------------------------------------------------

@@ -19,7 +19,9 @@ from src.data.hrrr_fetcher import HRRRFetcher
 from src.data.nws_client import NWSClient
 from src.data.kalshi_client import KalshiClient
 from src.data.kalshi_markets import KalshiMarketDiscovery, ParsedMarket
-from src.data.models import Signal, KalshiMarket, EnsembleForecast, MarketPriceHistory
+from src.data.models import (
+    Signal, KalshiMarket, EnsembleForecast, HRRRForecast, NWSForecast, MarketPriceHistory,
+)
 from src.data.freshness import DataFreshnessTracker
 from src.signals.ensemble_probability import EnsembleProbabilityCalculator
 from src.signals.hrrr_correction import HRRRCorrector
@@ -358,6 +360,73 @@ def _load_ensemble_from_db(city_name: str, target_date: str) -> EnsembleResult |
         session.close()
 
 
+def _load_hrrr_daily_max(city_name: str, target_date: str) -> tuple[float | None, str | None]:
+    """Load the latest HRRR daily max forecast for a city+date from the DB.
+
+    HRRR stores one row per (city, model_run_time, valid_time) where valid_time
+    is a date string. Returns (daily_max_f, model_run_time) or (None, None).
+    """
+    session = get_session()
+    try:
+        from sqlalchemy import func
+
+        latest_run = (
+            session.query(func.max(HRRRForecast.model_run_time))
+            .filter(HRRRForecast.city == city_name)
+            .scalar()
+        )
+        if not latest_run:
+            return None, None
+
+        row = (
+            session.query(HRRRForecast.temperature_f, HRRRForecast.model_run_time)
+            .filter(
+                HRRRForecast.city == city_name,
+                HRRRForecast.model_run_time == latest_run,
+                HRRRForecast.valid_time == target_date,
+            )
+            .first()
+        )
+        if row is None:
+            return None, None
+
+        return float(row[0]), row[1]
+
+    except Exception as e:
+        logger.warning(f"Failed to load HRRR from DB for {city_name}/{target_date}: {e}")
+        return None, None
+    finally:
+        session.close()
+
+
+def _load_nws_high(city_name: str, target_date: str) -> float | None:
+    """Load the latest NWS high temperature forecast for a city+date from the DB.
+
+    NWS stores multiple rows per (city, forecast_date) — one per fetch.
+    Returns the most recent high_f or None.
+    """
+    session = get_session()
+    try:
+        row = (
+            session.query(NWSForecast.high_f)
+            .filter(
+                NWSForecast.city == city_name,
+                NWSForecast.forecast_date == target_date,
+            )
+            .order_by(NWSForecast.fetched_at.desc())
+            .first()
+        )
+        if row and row[0] is not None:
+            return float(row[0])
+        return None
+
+    except Exception as e:
+        logger.warning(f"Failed to load NWS from DB for {city_name}/{target_date}: {e}")
+        return None
+    finally:
+        session.close()
+
+
 # ---------------------------------------------------------------------------
 # Active strategy loader
 # ---------------------------------------------------------------------------
@@ -424,8 +493,18 @@ def _store_all_signals(
     target_date: str,
     lead_hours: float,
     now: str,
+    *,
+    ticker_probs: dict[str, dict] | None = None,
+    ensemble_run: str | None = None,
+    hrrr_run: str | None = None,
 ):
-    """Store ALL computed signals for edge tracking (not just traded ones)."""
+    """Store ALL computed signals for edge tracking (not just traded ones).
+
+    Now also stores hrrr_prob, nws_prob, blended_prob, ensemble_run, hrrr_run.
+    """
+    if ticker_probs is None:
+        ticker_probs = {}
+
     session = get_session()
     try:
         for ticker, calibrated_prob in signals.items():
@@ -436,6 +515,7 @@ def _store_all_signals(
 
             yes_price = market_info["yes_price"]
             raw_edge = calibrated_prob - yes_price
+            extra = ticker_probs.get(ticker, {})
 
             sig = Signal(
                 city=city_name,
@@ -443,11 +523,16 @@ def _store_all_signals(
                 market_ticker=ticker,
                 computed_at=now,
                 ensemble_prob=prob_result.probability,
+                hrrr_prob=extra.get("hrrr_prob"),
+                nws_prob=extra.get("nws_prob"),
+                blended_prob=extra.get("blended_prob"),
                 calibrated_prob=calibrated_prob,
                 market_yes_price=yes_price,
                 raw_edge=raw_edge,
                 abs_edge=abs(raw_edge),
                 lead_hours=lead_hours,
+                ensemble_run=ensemble_run,
+                hrrr_run=hrrr_run,
             )
             session.add(sig)
         session.commit()
@@ -500,21 +585,77 @@ def _run_trading_cycle(
         model_run_dt = parse_iso_datetime(target_ensemble.model_run_time)
         lead_hours = compute_lead_hours(model_run_dt, target_date_obj, city_config.timezone)
 
-        # Calculate ensemble probabilities
+        # --- HRRR correction of ensemble distribution ---
+        hrrr_max, hrrr_run = _load_hrrr_daily_max(city_name, target_date)
+        corrected_member_maxes = target_ensemble.member_daily_maxes
+
+        if hrrr_max is not None and lead_hours < 48:
+            ens_mean, _ens_std = ctx.ensemble_calc.get_ensemble_mean_and_spread(
+                target_ensemble.member_daily_maxes
+            )
+            correction = ctx.hrrr_corrector.apply_correction(
+                target_ensemble.member_daily_maxes,
+                hrrr_max,
+                ens_mean,
+                lead_hours,
+            )
+            corrected_member_maxes = correction.adjusted_member_maxes
+            logger.debug(
+                f"[{tag}] HRRR correction for {city_name}/{target_date}: "
+                f"shift={correction.shift:.1f}F, weight={correction.correction_weight:.2f}"
+            )
+
+        # Calculate ensemble probabilities using HRRR-corrected members
         probs = ctx.ensemble_calc.get_full_distribution(
-            target_ensemble.member_daily_maxes, city_markets
+            corrected_member_maxes, city_markets
         )
+
+        # --- Load NWS high forecast ---
+        nws_high = _load_nws_high(city_name, target_date)
 
         # Build signal dict and market dict for edge detection
         signals: dict[str, float] = {}
         market_data: dict[str, dict] = {}
+        ticker_probs: dict[str, dict] = {}
 
         for m in city_markets:
             prob_result = probs.get(m.market_ticker)
             if prob_result is None:
                 continue
 
-            calibrated = ctx.calibrator.calibrate(prob_result.probability)
+            ensemble_prob = prob_result.probability
+
+            # --- Compute HRRR probability ---
+            hrrr_prob = None
+            if hrrr_max is not None:
+                if m.is_above_contract and m.threshold_f is not None:
+                    hrrr_prob = ctx.model_blender.prob_from_deterministic(
+                        hrrr_max, m.threshold_f, historical_std=3.0, is_above=True,
+                    )
+                elif m.bracket_low is not None or m.bracket_high is not None:
+                    hrrr_prob = ctx.model_blender.prob_from_deterministic_bracket(
+                        hrrr_max, m.bracket_low, m.bracket_high, historical_std=3.0,
+                    )
+
+            # --- Compute NWS probability ---
+            nws_prob = None
+            if nws_high is not None:
+                if m.is_above_contract and m.threshold_f is not None:
+                    nws_prob = ctx.model_blender.prob_from_deterministic(
+                        nws_high, m.threshold_f, historical_std=4.0, is_above=True,
+                    )
+                elif m.bracket_low is not None or m.bracket_high is not None:
+                    nws_prob = ctx.model_blender.prob_from_deterministic_bracket(
+                        nws_high, m.bracket_low, m.bracket_high, historical_std=4.0,
+                    )
+
+            # --- Blend all sources ---
+            blended = ctx.model_blender.blend(
+                ensemble_prob, hrrr_prob, nws_prob, lead_hours
+            )
+
+            # Calibrate the BLENDED probability (not raw ensemble)
+            calibrated = ctx.calibrator.calibrate(blended)
             signals[m.market_ticker] = calibrated
 
             market_data[m.market_ticker] = {
@@ -522,11 +663,21 @@ def _run_trading_cycle(
                 "city": m.city,
                 "target_date": m.target_date,
             }
+            ticker_probs[m.market_ticker] = {
+                "hrrr_prob": hrrr_prob,
+                "nws_prob": nws_prob,
+                "blended_prob": blended,
+            }
 
         now = datetime.now(timezone.utc).isoformat()
 
-        # Store ALL signals for edge tracking (Phase 3 requirement)
-        _store_all_signals(signals, market_data, probs, city_name, target_date, lead_hours, now)
+        # Store ALL signals for edge tracking
+        _store_all_signals(
+            signals, market_data, probs, city_name, target_date, lead_hours, now,
+            ticker_probs=ticker_probs,
+            ensemble_run=target_ensemble.model_run_time,
+            hrrr_run=hrrr_run,
+        )
 
         # Detect edges
         trade_signals = ctx.edge_detector.scan_for_edges(signals, market_data, lead_hours=lead_hours)

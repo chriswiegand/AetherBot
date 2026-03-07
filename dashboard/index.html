@@ -1167,14 +1167,40 @@ async function loadFreshness() {
 
 async function manualRefresh(source, btn) {
   btn.classList.add('refreshing');
+  btn.disabled = true;
   try {
-    await fetch(API_BASE + '/api/refresh/' + source, { method: 'POST' });
-    // Show feedback for 2 seconds
-    setTimeout(function() {
+    var resp = await fetch(API_BASE + '/api/refresh/' + source, { method: 'POST' });
+    var data = await resp.json();
+
+    if (data.status === 'already_running' || data.status === 'started') {
+      // Poll status every 3 seconds until done (max 120 seconds)
+      var attempts = 0;
+      var maxAttempts = 40;
+      var pollInterval = setInterval(async function() {
+        attempts++;
+        try {
+          var sr = await fetch(API_BASE + '/api/refresh/' + source + '/status');
+          var sd = await sr.json();
+          if (!sd.running || attempts >= maxAttempts) {
+            clearInterval(pollInterval);
+            btn.classList.remove('refreshing');
+            btn.disabled = false;
+            loadFreshness();
+          }
+        } catch (e2) {
+          clearInterval(pollInterval);
+          btn.classList.remove('refreshing');
+          btn.disabled = false;
+        }
+      }, 3000);
+    } else {
       btn.classList.remove('refreshing');
-    }, 2000);
+      btn.disabled = false;
+    }
+
   } catch (e) {
     btn.classList.remove('refreshing');
+    btn.disabled = false;
     console.error('Manual refresh failed:', e);
   }
 }

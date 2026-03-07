@@ -150,6 +150,17 @@
     </div>
   </div>
 
+  <!-- Forecast Evolution Chart -->
+  <div class="card" id="forecast-card" style="display:none">
+    <div class="card-title">Forecast Evolution</div>
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px">
+      <span style="font-size:.7rem;color:var(--text-muted)">How each data source's probability evolved over time</span>
+    </div>
+    <div class="chart-wrap">
+      <canvas id="forecast-chart"></canvas>
+    </div>
+  </div>
+
   <!-- Detail Grid -->
   <div class="detail-grid" id="detail-grid" style="display:none">
     <div class="card" id="position-card">
@@ -243,6 +254,7 @@ function showPlaceholder(){
   $('empty-placeholder').style.display = 'block';
   $('exit-card').style.display = 'none';
   $('chart-card').style.display = 'none';
+  $('forecast-card').style.display = 'none';
   $('detail-grid').style.display = 'none';
   $('settlement-banner').style.display = 'none';
   if(refreshTimer) clearInterval(refreshTimer);
@@ -260,11 +272,13 @@ function renderAll(data){
   $('empty-placeholder').style.display = 'none';
   $('exit-card').style.display = 'block';
   $('chart-card').style.display = 'block';
+  $('forecast-card').style.display = 'block';
   $('detail-grid').style.display = 'grid';
 
   renderSettlementBanner(data);
   renderExitAnalysis(data.exit_analysis);
   renderPriceChart(data);
+  renderForecastEvolution(data);
   renderPositionDetails(data);
   renderEdgeDetails(data);
 }
@@ -502,6 +516,185 @@ function renderPriceChart(data){
             callback:function(v){return (v*100).toFixed(0)+'c';}
           },
           title:{display:true,text:'Price (cents)',color:'#8b949e',font:{size:11}},
+        }
+      }
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
+//  Forecast Evolution Chart
+// ---------------------------------------------------------------------------
+var forecastChart = null;
+
+function renderForecastEvolution(data){
+  if(forecastChart){ forecastChart.destroy(); forecastChart = null; }
+
+  var sh = data.signal_history || [];
+  var ph = data.price_history || [];
+
+  // Check if we have any multi-source data
+  var hasHrrr = sh.some(function(s){ return s.hrrr_prob != null; });
+  var hasNws = sh.some(function(s){ return s.nws_prob != null; });
+  var hasBlended = sh.some(function(s){ return s.blended_prob != null; });
+
+  // If only 1 data point and no multi-source, show minimal
+  if(sh.length < 2 && !hasHrrr && !hasNws && !hasBlended){
+    $('forecast-card').style.display = 'none';
+    return;
+  }
+
+  var datasets = [];
+  var smallSet = function(arr){ return arr.length < 30; };
+
+  // Ensemble probability (green)
+  var ensData = sh.filter(function(s){ return s.ensemble_prob != null; })
+    .map(function(s){ return {x: new Date(s.computed_at), y: s.ensemble_prob}; });
+  if(ensData.length > 0){
+    datasets.push({
+      label:'Ensemble (GFS)',
+      data:ensData,
+      borderColor:'#3fb950',
+      borderWidth:1.5,
+      pointRadius: smallSet(ensData) ? 3 : 0,
+      pointBackgroundColor:'#3fb950',
+      fill:false, tension:0.3,
+    });
+  }
+
+  // HRRR probability (orange)
+  if(hasHrrr){
+    var hrrrData = sh.filter(function(s){ return s.hrrr_prob != null; })
+      .map(function(s){ return {x: new Date(s.computed_at), y: s.hrrr_prob}; });
+    datasets.push({
+      label:'HRRR (3km)',
+      data:hrrrData,
+      borderColor:'#db6d28',
+      borderWidth:1.5,
+      pointRadius: smallSet(hrrrData) ? 3 : 0,
+      pointBackgroundColor:'#db6d28',
+      fill:false, tension:0.3,
+    });
+  }
+
+  // NWS probability (blue)
+  if(hasNws){
+    var nwsData = sh.filter(function(s){ return s.nws_prob != null; })
+      .map(function(s){ return {x: new Date(s.computed_at), y: s.nws_prob}; });
+    datasets.push({
+      label:'NWS',
+      data:nwsData,
+      borderColor:'#58a6ff',
+      borderWidth:1.5,
+      pointRadius: smallSet(nwsData) ? 3 : 0,
+      pointBackgroundColor:'#58a6ff',
+      fill:false, tension:0.3,
+    });
+  }
+
+  // Blended probability (purple dashed)
+  if(hasBlended){
+    var blendData = sh.filter(function(s){ return s.blended_prob != null; })
+      .map(function(s){ return {x: new Date(s.computed_at), y: s.blended_prob}; });
+    datasets.push({
+      label:'Blended',
+      data:blendData,
+      borderColor:'#a371f7',
+      borderWidth:1.5,
+      borderDash:[4,4],
+      pointRadius: smallSet(blendData) ? 2 : 0,
+      pointBackgroundColor:'#a371f7',
+      fill:false, tension:0.3,
+    });
+  }
+
+  // Calibrated probability (bold yellow — final model output)
+  var calData = sh.filter(function(s){ return s.calibrated_prob != null; })
+    .map(function(s){ return {x: new Date(s.computed_at), y: s.calibrated_prob}; });
+  if(calData.length > 0){
+    datasets.push({
+      label:'Calibrated (Final)',
+      data:calData,
+      borderColor:'#d29922',
+      borderWidth:2.5,
+      pointRadius: smallSet(calData) ? 3 : 0,
+      pointBackgroundColor:'#d29922',
+      fill:false, tension:0.3,
+    });
+  }
+
+  // Market price as thin gray reference
+  var priceData = ph.map(function(p){
+    return {x: new Date(p.captured_at), y: p.yes_price};
+  });
+  // Also add signal snapshots of market price for coverage
+  sh.forEach(function(s){
+    if(s.market_yes_price != null){
+      priceData.push({x: new Date(s.computed_at), y: s.market_yes_price});
+    }
+  });
+  priceData.sort(function(a,b){ return a.x - b.x; });
+  if(priceData.length > 0){
+    datasets.push({
+      label:'Market Price',
+      data:priceData,
+      borderColor:'rgba(139,148,158,0.4)',
+      borderWidth:1,
+      borderDash:[3,3],
+      pointRadius:0,
+      fill:false, tension:0.3,
+    });
+  }
+
+  if(datasets.length === 0){
+    $('forecast-card').style.display = 'none';
+    return;
+  }
+
+  var ctx = $('forecast-chart').getContext('2d');
+  forecastChart = new Chart(ctx, {
+    type:'line',
+    data:{datasets:datasets},
+    options:{
+      responsive:true, maintainAspectRatio:false,
+      interaction:{mode:'index',intersect:false},
+      plugins:{
+        legend:{
+          display:true, position:'bottom',
+          labels:{color:'#8b949e',font:{size:10},boxWidth:12,padding:12}
+        },
+        tooltip:{
+          backgroundColor:'rgba(22,27,34,0.95)', titleColor:'#e6edf3',
+          bodyColor:'#8b949e', borderColor:'#30363d', borderWidth:1,
+          callbacks:{
+            title:function(items){
+              if(!items.length) return '';
+              var d = new Date(items[0].parsed.x);
+              return d.toLocaleDateString('en-US',{month:'short',day:'numeric'}) + ' ' +
+                     d.toLocaleTimeString('en-US',{hour:'2-digit',minute:'2-digit'});
+            },
+            label:function(ctx){
+              return ctx.dataset.label + ': ' + (ctx.parsed.y * 100).toFixed(1) + '%';
+            }
+          }
+        },
+        annotation:false
+      },
+      scales:{
+        x:{
+          type:'time',
+          time:{tooltipFormat:'MMM d, HH:mm', displayFormats:{minute:'HH:mm',hour:'MMM d HH:mm',day:'MMM d'}},
+          grid:{color:'rgba(48,54,61,0.6)'},
+          ticks:{color:'#8b949e',font:{size:10},maxRotation:0},
+        },
+        y:{
+          min:0, max:1,
+          grid:{color:'rgba(48,54,61,0.6)'},
+          ticks:{
+            color:'#8b949e',font:{size:10},
+            callback:function(v){return (v*100).toFixed(0)+'%';}
+          },
+          title:{display:true,text:'Probability',color:'#8b949e',font:{size:11}},
         }
       }
     }
