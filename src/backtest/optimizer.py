@@ -1,14 +1,16 @@
 """Parameter sweep optimizer for strategy backtesting.
 
 Runs a grid search across parameter combinations and returns
-performance metrics for each, enabling co-optimization of
-entry filters and position sizing.
+performance metrics for each (aggregate + per-city), enabling
+co-optimization of entry filters and position sizing.
 """
 
 from __future__ import annotations
 
 import itertools
 import logging
+import math
+from collections import defaultdict
 from copy import deepcopy
 
 from src.backtest.strategy_runner import run_strategy_backtest
@@ -33,6 +35,49 @@ _BASE_STRATEGY = {
 }
 
 
+def _compute_city_metrics(trades: list[dict]) -> dict[str, dict]:
+    """Compute per-city performance from a list of trade dicts.
+
+    Returns {city_name: {total_trades, win_rate, gross_pnl, sharpe_ratio, profit_factor}}.
+    """
+    by_city: dict[str, list[dict]] = defaultdict(list)
+    for t in trades:
+        by_city[t["city"]].append(t)
+
+    city_metrics = {}
+    for city, city_trades in by_city.items():
+        n = len(city_trades)
+        wins = [t for t in city_trades if t["pnl"] > 0]
+        losses = [t for t in city_trades if t["pnl"] <= 0]
+
+        gross_pnl = sum(t["pnl"] for t in city_trades)
+        win_rate = len(wins) / n if n else 0
+
+        # Sharpe (annualized)
+        if n > 1:
+            pnls = [t["pnl"] for t in city_trades]
+            mean_pnl = sum(pnls) / len(pnls)
+            std_pnl = (sum((p - mean_pnl) ** 2 for p in pnls) / (len(pnls) - 1)) ** 0.5
+            sharpe = (mean_pnl / std_pnl * math.sqrt(250)) if std_pnl > 0 else 0.0
+        else:
+            sharpe = 0.0
+
+        # Profit factor
+        total_wins = sum(t["pnl"] for t in wins) if wins else 0
+        total_losses = abs(sum(t["pnl"] for t in losses)) if losses else 0.001
+        pf = total_wins / total_losses if total_losses > 0 else 0.0
+
+        city_metrics[city] = {
+            "total_trades": n,
+            "win_rate": round(win_rate, 4),
+            "gross_pnl": round(gross_pnl, 2),
+            "sharpe_ratio": round(sharpe, 4),
+            "profit_factor": round(pf, 4),
+        }
+
+    return city_metrics
+
+
 class BacktestOptimizer:
     """Grid search over strategy parameters."""
 
@@ -43,7 +88,7 @@ class BacktestOptimizer:
         end_date: str,
         target_metric: str = "sharpe_ratio",
         city_names: list[str] | None = None,
-    ) -> list[dict]:
+    ) -> dict:
         """Run backtest for every combination of parameter values.
 
         Args:
@@ -57,7 +102,9 @@ class BacktestOptimizer:
             city_names: Optional city filter
 
         Returns:
-            List of dicts: [{params: {...}, metrics: {...}}, ...]
+            Dict with:
+              "results": [{params, metrics, city_metrics}, ...]
+              "best_by_city": {city: {params, metrics}}
         """
         # Build all combinations
         param_names = list(param_ranges.keys())
@@ -70,6 +117,8 @@ class BacktestOptimizer:
         )
 
         results = []
+        all_cities_seen: set[str] = set()
+
         for i, combo in enumerate(combinations):
             params = dict(zip(param_names, combo))
 
@@ -82,6 +131,11 @@ class BacktestOptimizer:
                     strategy, start_date, end_date, city_names
                 )
                 perf = bt_result.get("performance", {})
+                trades = bt_result.get("trades", [])
+
+                # Per-city breakdown
+                city_metrics = _compute_city_metrics(trades)
+                all_cities_seen.update(city_metrics.keys())
 
                 result_entry = {
                     "params": params,
@@ -94,6 +148,7 @@ class BacktestOptimizer:
                         "profit_factor": perf.get("profit_factor", 0),
                         "avg_edge": perf.get("avg_edge", 0),
                     },
+                    "city_metrics": city_metrics,
                     "brier_score": bt_result.get("brier_score"),
                 }
                 results.append(result_entry)
@@ -108,6 +163,23 @@ class BacktestOptimizer:
                 results.append({
                     "params": params,
                     "metrics": {"error": str(e)},
+                    "city_metrics": {},
                 })
 
-        return results
+        # Compute best parameter set per city
+        best_by_city: dict[str, dict] = {}
+        for city in sorted(all_cities_seen):
+            best_score = -float("inf")
+            best_entry = None
+            for r in results:
+                cm = r.get("city_metrics", {}).get(city)
+                if cm and cm.get(target_metric, 0) > best_score:
+                    best_score = cm[target_metric]
+                    best_entry = {"params": r["params"], "metrics": cm}
+            if best_entry:
+                best_by_city[city] = best_entry
+
+        return {
+            "results": results,
+            "best_by_city": best_by_city,
+        }

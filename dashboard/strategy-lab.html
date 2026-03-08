@@ -438,14 +438,110 @@
     display:flex;flex-wrap:wrap;gap:8px;
   }
 
-  .opt-param-row{
-    display:flex;align-items:center;gap:8px;margin-bottom:8px;
+  /* ---------- Range Slider ---------- */
+  .slider-row{
+    display:flex;align-items:center;gap:12px;margin-bottom:18px;
   }
-  .opt-param-row label{
+  .slider-row > label{
     font-size:.78rem;font-weight:600;color:var(--text-secondary);
-    min-width:140px;
+    min-width:130px;flex-shrink:0;
   }
-  .opt-param-row input{flex:1}
+  .slider-col{flex:1;min-width:0}
+  .range-slider{
+    position:relative;height:8px;margin:14px 0 22px;
+  }
+  .range-slider__track{
+    position:absolute;top:0;left:0;right:0;height:8px;
+    background:var(--bg-card-alt);border-radius:4px;
+    border:1px solid var(--border);
+  }
+  .range-slider__range{
+    position:absolute;top:0;height:8px;
+    background:rgba(88,166,255,.25);border-radius:4px;
+    pointer-events:none;
+  }
+  .range-slider__input{
+    position:absolute;top:-6px;width:100%;
+    pointer-events:none;-webkit-appearance:none;appearance:none;
+    background:none;margin:0;padding:0;height:20px;
+  }
+  .range-slider__input::-webkit-slider-thumb{
+    -webkit-appearance:none;appearance:none;
+    width:18px;height:18px;border-radius:50%;
+    background:var(--accent);border:2px solid var(--bg-canvas);
+    cursor:pointer;pointer-events:all;
+    box-shadow:0 1px 4px rgba(0,0,0,.4);
+    transition:transform .1s;
+  }
+  .range-slider__input::-webkit-slider-thumb:hover{
+    transform:scale(1.2);
+  }
+  .range-slider__input::-moz-range-thumb{
+    width:18px;height:18px;border-radius:50%;
+    background:var(--accent);border:2px solid var(--bg-canvas);
+    cursor:pointer;pointer-events:all;
+    box-shadow:0 1px 4px rgba(0,0,0,.4);
+  }
+  .range-slider__input.range-slider__min{z-index:3}
+  .range-slider__input.range-slider__max{z-index:4}
+  .range-slider__values{
+    display:flex;justify-content:space-between;
+    position:absolute;top:14px;left:0;right:0;
+    font-size:.7rem;color:var(--accent);font-weight:600;
+  }
+  .city-markers{
+    position:absolute;top:0;left:0;right:0;height:8px;
+    pointer-events:none;z-index:5;
+  }
+  .city-marker{
+    position:absolute;top:-5px;width:16px;height:16px;
+    border-radius:50%;border:2px solid var(--bg-canvas);
+    transform:translateX(-50%);
+    pointer-events:all;cursor:pointer;
+    box-shadow:0 1px 3px rgba(0,0,0,.5);
+    transition:transform .15s,opacity .3s;
+    opacity:0;z-index:6;
+  }
+  .city-marker.visible{opacity:1}
+  .city-marker:hover{transform:translateX(-50%) scale(1.35);z-index:10}
+  .city-marker__tooltip{
+    display:none;position:absolute;bottom:22px;left:50%;
+    transform:translateX(-50%);
+    background:var(--bg-card);border:1px solid var(--border);
+    border-radius:6px;padding:6px 10px;
+    font-size:.7rem;white-space:nowrap;
+    color:var(--text-primary);z-index:20;
+    box-shadow:0 4px 12px rgba(0,0,0,.4);
+    pointer-events:none;
+  }
+  .city-marker:hover .city-marker__tooltip{display:block}
+  .city-marker__tooltip strong{color:inherit}
+  .step-control{
+    display:flex;align-items:center;gap:4px;flex-shrink:0;
+  }
+  .step-control label{
+    font-size:.65rem;color:var(--text-muted);font-weight:600;
+    text-transform:uppercase;letter-spacing:.04em;
+  }
+  .step-control input{
+    width:56px;text-align:center;padding:4px 6px;font-size:.75rem;
+  }
+  .city-legend{
+    display:flex;gap:14px;flex-wrap:wrap;
+    padding:8px 0 4px;
+  }
+  .city-legend-item{
+    display:flex;align-items:center;gap:5px;
+    font-size:.72rem;color:var(--text-secondary);font-weight:600;
+  }
+  .city-dot{
+    width:10px;height:10px;border-radius:50%;display:inline-block;
+  }
+  .combo-count-badge{
+    font-size:.72rem;color:var(--text-muted);
+    background:var(--bg-card-alt);border:1px solid var(--border);
+    border-radius:4px;padding:2px 8px;margin-left:8px;
+  }
 
   /* ---------- Tabs ---------- */
   .tabs{
@@ -685,29 +781,115 @@
     <div class="section-title"><span>Optimization Lab</span></div>
 
     <div class="card">
-      <div class="card-header"><span class="card-title">Parameter Grid Search</span></div>
+      <div class="card-header">
+        <span class="card-title">Parameter Grid Search</span>
+        <span class="combo-count-badge" id="opt-combo-count">0 combinations</span>
+      </div>
 
       <div class="form-section">
-        <div class="form-section-title">Parameter Ranges (comma-separated values)</div>
-        <div class="opt-param-row">
+        <div class="form-section-title">Search Ranges</div>
+
+        <div class="slider-row" data-param="edge_threshold">
           <label>Edge Threshold</label>
-          <input class="form-input" id="opt-edge-threshold" placeholder="0.05, 0.08, 0.10, 0.12" style="flex:1">
+          <div class="slider-col">
+            <div class="range-slider" data-abs-min="0.01" data-abs-max="0.40"
+                 data-default-min="0.05" data-default-max="0.25" data-step="0.01" data-fmt="pct1">
+              <div class="range-slider__track"></div>
+              <div class="range-slider__range"></div>
+              <input type="range" class="range-slider__input range-slider__min">
+              <input type="range" class="range-slider__input range-slider__max">
+              <div class="range-slider__values"><span class="range-val-min"></span><span class="range-val-max"></span></div>
+              <div class="city-markers"></div>
+            </div>
+          </div>
+          <div class="step-control">
+            <label>Step</label>
+            <input type="number" class="form-input step-input" step="0.01" min="0.01" value="0.05">
+          </div>
         </div>
-        <div class="opt-param-row">
+
+        <div class="slider-row" data-param="min_model_prob">
           <label>Min Model Prob</label>
-          <input class="form-input" id="opt-min-model-prob" placeholder="0.55, 0.60, 0.65" style="flex:1">
+          <div class="slider-col">
+            <div class="range-slider" data-abs-min="0.30" data-abs-max="0.95"
+                 data-default-min="0.50" data-default-max="0.80" data-step="0.01" data-fmt="pct0">
+              <div class="range-slider__track"></div>
+              <div class="range-slider__range"></div>
+              <input type="range" class="range-slider__input range-slider__min">
+              <input type="range" class="range-slider__input range-slider__max">
+              <div class="range-slider__values"><span class="range-val-min"></span><span class="range-val-max"></span></div>
+              <div class="city-markers"></div>
+            </div>
+          </div>
+          <div class="step-control">
+            <label>Step</label>
+            <input type="number" class="form-input step-input" step="0.01" min="0.01" value="0.05">
+          </div>
         </div>
-        <div class="opt-param-row">
+
+        <div class="slider-row" data-param="fractional_kelly">
           <label>Fractional Kelly</label>
-          <input class="form-input" id="opt-fractional-kelly" placeholder="0.15, 0.20, 0.25" style="flex:1">
+          <div class="slider-col">
+            <div class="range-slider" data-abs-min="0.05" data-abs-max="0.50"
+                 data-default-min="0.10" data-default-max="0.30" data-step="0.01" data-fmt="pct0">
+              <div class="range-slider__track"></div>
+              <div class="range-slider__range"></div>
+              <input type="range" class="range-slider__input range-slider__min">
+              <input type="range" class="range-slider__input range-slider__max">
+              <div class="range-slider__values"><span class="range-val-min"></span><span class="range-val-max"></span></div>
+              <div class="city-markers"></div>
+            </div>
+          </div>
+          <div class="step-control">
+            <label>Step</label>
+            <input type="number" class="form-input step-input" step="0.01" min="0.01" value="0.05">
+          </div>
         </div>
-        <div class="opt-param-row">
+
+        <div class="slider-row" data-param="max_position_pct">
           <label>Max Position %</label>
-          <input class="form-input" id="opt-max-position-pct" placeholder="0.05, 0.10, 0.15" style="flex:1">
+          <div class="slider-col">
+            <div class="range-slider" data-abs-min="0.02" data-abs-max="0.25"
+                 data-default-min="0.05" data-default-max="0.15" data-step="0.01" data-fmt="pct0">
+              <div class="range-slider__track"></div>
+              <div class="range-slider__range"></div>
+              <input type="range" class="range-slider__input range-slider__min">
+              <input type="range" class="range-slider__input range-slider__max">
+              <div class="range-slider__values"><span class="range-val-min"></span><span class="range-val-max"></span></div>
+              <div class="city-markers"></div>
+            </div>
+          </div>
+          <div class="step-control">
+            <label>Step</label>
+            <input type="number" class="form-input step-input" step="0.01" min="0.01" value="0.05">
+          </div>
         </div>
-        <div class="opt-param-row">
+
+        <div class="slider-row" data-param="max_lead_hours">
           <label>Max Lead Hours</label>
-          <input class="form-input" id="opt-max-lead-hours" placeholder="24, 48, 72" style="flex:1">
+          <div class="slider-col">
+            <div class="range-slider" data-abs-min="6" data-abs-max="120"
+                 data-default-min="24" data-default-max="72" data-step="1" data-fmt="hrs">
+              <div class="range-slider__track"></div>
+              <div class="range-slider__range"></div>
+              <input type="range" class="range-slider__input range-slider__min">
+              <input type="range" class="range-slider__input range-slider__max">
+              <div class="range-slider__values"><span class="range-val-min"></span><span class="range-val-max"></span></div>
+              <div class="city-markers"></div>
+            </div>
+          </div>
+          <div class="step-control">
+            <label>Step</label>
+            <input type="number" class="form-input step-input" step="1" min="1" value="12">
+          </div>
+        </div>
+
+        <div class="city-legend" id="opt-city-legend" style="display:none">
+          <span class="city-legend-item"><span class="city-dot" style="background:#58a6ff"></span> NYC</span>
+          <span class="city-legend-item"><span class="city-dot" style="background:#f85149"></span> Chicago</span>
+          <span class="city-legend-item"><span class="city-dot" style="background:#3fb950"></span> Miami</span>
+          <span class="city-legend-item"><span class="city-dot" style="background:#d29922"></span> LA</span>
+          <span class="city-legend-item"><span class="city-dot" style="background:#db6d28"></span> Denver</span>
         </div>
       </div>
 
@@ -1772,31 +1954,89 @@ function makeEmptyChart(canvasId, type) {
 }
 
 // ---------------------------------------------------------------------------
-//  OPTIMIZATION
+//  OPTIMIZATION — Sliders + City Markers
 // ---------------------------------------------------------------------------
+var CITY_COLORS = {
+  'NYC': '#58a6ff', 'Chicago': '#f85149', 'Miami': '#3fb950',
+  'LA': '#d29922', 'Denver': '#db6d28'
+};
+
+// --- Slider Initialization ---
+function initSliders() {
+  document.querySelectorAll('.slider-row').forEach(function(row) {
+    var slider = row.querySelector('.range-slider');
+    var minInput = slider.querySelector('.range-slider__min');
+    var maxInput = slider.querySelector('.range-slider__max');
+    var rangeFill = slider.querySelector('.range-slider__range');
+    var minLabel = slider.querySelector('.range-val-min');
+    var maxLabel = slider.querySelector('.range-val-max');
+    var stepInput = row.querySelector('.step-input');
+
+    var absMin = parseFloat(slider.dataset.absMin);
+    var absMax = parseFloat(slider.dataset.absMax);
+    var defMin = parseFloat(slider.dataset.defaultMin);
+    var defMax = parseFloat(slider.dataset.defaultMax);
+    var step = parseFloat(slider.dataset.step);
+    var fmt = slider.dataset.fmt;
+
+    minInput.min = maxInput.min = absMin;
+    minInput.max = maxInput.max = absMax;
+    minInput.step = maxInput.step = step;
+    minInput.value = defMin;
+    maxInput.value = defMax;
+
+    function fmtVal(v) {
+      if (fmt === 'pct1') return (v * 100).toFixed(1) + '%';
+      if (fmt === 'pct0') return (v * 100).toFixed(0) + '%';
+      if (fmt === 'hrs') return v + 'h';
+      return v;
+    }
+
+    function update() {
+      var lo = parseFloat(minInput.value);
+      var hi = parseFloat(maxInput.value);
+      if (lo > hi) { minInput.value = hi; lo = hi; }
+      if (hi < lo) { maxInput.value = lo; hi = lo; }
+      var pctL = ((lo - absMin) / (absMax - absMin)) * 100;
+      var pctR = ((hi - absMin) / (absMax - absMin)) * 100;
+      rangeFill.style.left = pctL + '%';
+      rangeFill.style.width = (pctR - pctL) + '%';
+      minLabel.textContent = fmtVal(lo);
+      maxLabel.textContent = fmtVal(hi);
+      updateComboCount();
+    }
+
+    minInput.addEventListener('input', update);
+    maxInput.addEventListener('input', update);
+    stepInput.addEventListener('input', updateComboCount);
+    update();
+  });
+}
+
+function updateComboCount() {
+  var total = 1;
+  document.querySelectorAll('.slider-row').forEach(function(row) {
+    var slider = row.querySelector('.range-slider');
+    var lo = parseFloat(slider.querySelector('.range-slider__min').value);
+    var hi = parseFloat(slider.querySelector('.range-slider__max').value);
+    var step = parseFloat(row.querySelector('.step-input').value) || 1;
+    var n = Math.max(1, Math.floor((hi - lo) / step + 1.001));
+    total *= n;
+  });
+  $('opt-combo-count').textContent = total + ' combination' + (total !== 1 ? 's' : '');
+}
+
+// --- Run Optimization ---
 async function runOptimization() {
   var paramRanges = {};
-  var fields = {
-    'edge_threshold': 'opt-edge-threshold',
-    'min_model_prob': 'opt-min-model-prob',
-    'fractional_kelly': 'opt-fractional-kelly',
-    'max_position_pct': 'opt-max-position-pct',
-    'max_lead_hours': 'opt-max-lead-hours'
-  };
-
-  var hasParams = false;
-  Object.keys(fields).forEach(function(key) {
-    var val = $(fields[key]).value.trim();
-    if (val) {
-      paramRanges[key] = val.split(',').map(function(v) { return Number(v.trim()); }).filter(function(v) { return !isNaN(v); });
-      if (paramRanges[key].length > 0) hasParams = true;
-    }
+  document.querySelectorAll('.slider-row').forEach(function(row) {
+    var param = row.dataset.param;
+    var slider = row.querySelector('.range-slider');
+    var lo = parseFloat(slider.querySelector('.range-slider__min').value);
+    var hi = parseFloat(slider.querySelector('.range-slider__max').value);
+    var step = parseFloat(row.querySelector('.step-input').value);
+    paramRanges[param] = { min: lo, max: hi, step: step };
   });
-
-  if (!hasParams) {
-    showToast('Enter at least one parameter range', 'error');
-    return;
-  }
 
   var startDate = $('opt-start-date').value;
   var endDate = $('opt-end-date').value;
@@ -1839,6 +2079,7 @@ async function runOptimization() {
   }
 }
 
+// --- Load Past Runs ---
 async function loadOptimizationRuns() {
   var data = await safeFetch('/api/optimize/runs');
   var list = $('opt-runs-list');
@@ -1856,7 +2097,7 @@ async function loadOptimizationRuns() {
       + '  <div class="run-item-info">' + esc(run.name || 'Run #' + run.id) + '</div>'
       + '  <div class="run-item-meta">' + esc(created) + ' | Target: ' + esc(metric) + '</div>'
       + '</div>'
-      + '<span class="badge badge-blue">' + (run.total_combinations || run.total_combos || '?') + ' combos</span>'
+      + '<span class="badge badge-blue">' + (run.total_combinations || '?') + ' combos</span>'
       + '</div>';
   }).join('');
 }
@@ -1872,6 +2113,7 @@ async function displayOptimizationRun(runId) {
   loadOptimizationRuns();
 }
 
+// --- Display Results ---
 function displayOptimizationResults(data) {
   $('opt-results-area').style.display = 'block';
 
@@ -1883,9 +2125,9 @@ function displayOptimizationResults(data) {
     // Flatten nested {params:{...}, metrics:{...}} into flat objects
     results = raw.map(function(r) {
       if (r.params || r.metrics) {
-        return Object.assign({}, r.params || {}, r.metrics || {}, {brier_score: r.brier_score});
+        return Object.assign({}, r.params || {}, r.metrics || {}, {brier_score: r.brier_score, city_metrics: r.city_metrics});
       }
-      return r;  // already flat
+      return r;
     });
   } catch (e) {
     console.warn('Parse error:', e);
@@ -1894,13 +2136,13 @@ function displayOptimizationResults(data) {
   if (!Array.isArray(results) || results.length === 0) {
     $('opt-best-card').style.display = 'none';
     $('opt-results-body').innerHTML = '<tr><td colspan="10" class="no-data">No results data</td></tr>';
+    clearCityMarkers();
     return;
   }
 
-  // Sort by target metric (first result should be best)
   var targetMetric = data.target_metric || 'sharpe_ratio';
 
-  // Show best params
+  // Show best aggregate params
   var best = results[0];
   $('opt-best-card').style.display = 'block';
   var bestParams = [];
@@ -1912,10 +2154,8 @@ function displayOptimizationResults(data) {
   if (best.sharpe_ratio != null) bestParams.push('<span class="param-chip"><b>Sharpe:</b> ' + Number(best.sharpe_ratio).toFixed(2) + '</span>');
   if (best.win_rate != null) bestParams.push('<span class="param-chip"><b>WR:</b> ' + fmtPct(best.win_rate) + '</span>');
   if (best.gross_pnl != null) bestParams.push('<span class="param-chip"><b>PnL:</b> ' + fmt$(best.gross_pnl) + '</span>');
-
   $('opt-best-params').innerHTML = bestParams.join('');
 
-  // Store run id for save-as-strategy
   $('opt-save-btn').setAttribute('data-run-id', data.id || '');
 
   // Render table
@@ -1923,8 +2163,77 @@ function displayOptimizationResults(data) {
   _optSortCol = -1;
   _optSortDir = 'desc';
   renderOptTable();
+
+  // Render city markers on sliders
+  var bestByCity = {};
+  try {
+    var bbc = data.best_by_city_json || data.best_by_city;
+    if (typeof bbc === 'string') bestByCity = JSON.parse(bbc);
+    else if (bbc) bestByCity = bbc;
+  } catch (e) { console.warn('best_by_city parse error:', e); }
+
+  renderCityMarkers(bestByCity);
 }
 
+// --- City Markers ---
+function clearCityMarkers() {
+  document.querySelectorAll('.city-markers').forEach(function(c) { c.innerHTML = ''; });
+  $('opt-city-legend').style.display = 'none';
+}
+
+function renderCityMarkers(bestByCity) {
+  clearCityMarkers();
+  if (!bestByCity || Object.keys(bestByCity).length === 0) return;
+
+  $('opt-city-legend').style.display = 'flex';
+
+  document.querySelectorAll('.slider-row').forEach(function(row) {
+    var param = row.dataset.param;
+    var slider = row.querySelector('.range-slider');
+    var container = slider.querySelector('.city-markers');
+    var absMin = parseFloat(slider.dataset.absMin);
+    var absMax = parseFloat(slider.dataset.absMax);
+    var fmt = slider.dataset.fmt;
+
+    Object.keys(CITY_COLORS).forEach(function(city) {
+      var entry = bestByCity[city];
+      if (!entry || !entry.params) return;
+      var val = entry.params[param];
+      if (val == null) return;
+
+      var pct = ((val - absMin) / (absMax - absMin)) * 100;
+      pct = Math.max(0, Math.min(100, pct));
+
+      var dot = document.createElement('div');
+      dot.className = 'city-marker';
+      dot.style.left = pct + '%';
+      dot.style.background = CITY_COLORS[city];
+
+      // Format the value for tooltip
+      var fmtV = val;
+      if (fmt === 'pct1') fmtV = (val * 100).toFixed(1) + '%';
+      else if (fmt === 'pct0') fmtV = (val * 100).toFixed(0) + '%';
+      else if (fmt === 'hrs') fmtV = val + 'h';
+
+      var m = entry.metrics || {};
+      var tip = document.createElement('div');
+      tip.className = 'city-marker__tooltip';
+      tip.innerHTML = '<strong style="color:' + CITY_COLORS[city] + '">' + esc(city) + '</strong> — ' + fmtV
+        + '<br>WR: ' + (m.win_rate != null ? (m.win_rate * 100).toFixed(1) + '%' : '--')
+        + ' · PnL: ' + (m.gross_pnl != null ? fmt$(m.gross_pnl) : '--')
+        + ' · Sharpe: ' + (m.sharpe_ratio != null ? Number(m.sharpe_ratio).toFixed(1) : '--');
+      dot.appendChild(tip);
+      container.appendChild(dot);
+
+      // Animate in
+      requestAnimationFrame(function() {
+        requestAnimationFrame(function() { dot.classList.add('visible'); });
+      });
+    });
+  });
+}
+
+// --- Results Table ---
 var _optTableData = [];
 var _optSortCol = -1;
 var _optSortDir = 'desc';
@@ -1971,7 +2280,6 @@ function sortOptTable(colIdx) {
     return _optSortDir === 'asc' ? va - vb : vb - va;
   });
 
-  // Update header classes
   document.querySelectorAll('#opt-results-table th').forEach(function(th, i) {
     th.classList.remove('sorted-asc', 'sorted-desc');
     if (i === colIdx) th.classList.add('sorted-' + _optSortDir);
@@ -2003,6 +2311,7 @@ async function saveOptAsStrategy() {
 setDefaultDates();
 loadStrategies();
 loadOptimizationRuns();
+initSliders();
 </script>
 </body>
 </html>

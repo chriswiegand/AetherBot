@@ -676,10 +676,16 @@ def _ensure_optimization_table(conn):
             total_combinations INTEGER,
             results_json TEXT,
             best_params_json TEXT,
+            best_by_city_json TEXT,
             created_at TEXT NOT NULL,
             duration_seconds REAL
         )
     """)
+    # Add best_by_city_json column if missing (migrate existing tables)
+    cur = conn.execute("PRAGMA table_info(optimization_runs)")
+    cols = {row[1] for row in cur.fetchall()}
+    if "best_by_city_json" not in cols:
+        conn.execute("ALTER TABLE optimization_runs ADD COLUMN best_by_city_json TEXT")
 
 
 def _ensure_strategy_id_column(conn):
@@ -1083,17 +1089,33 @@ def api_run_optimization():
         if not param_ranges or not start_date or not end_date:
             return jsonify({"error": "param_ranges, start_date, end_date required"}), 400
 
+        # Convert {min, max, step} range specs to value arrays
+        for key, spec in list(param_ranges.items()):
+            if isinstance(spec, dict) and "min" in spec and "max" in spec and "step" in spec:
+                values = []
+                v = float(spec["min"])
+                step = float(spec["step"])
+                mx = float(spec["max"])
+                while v <= mx + 1e-9:
+                    values.append(round(v, 6))
+                    v += step
+                param_ranges[key] = values
+            # else: already a list (backward compatible)
+
         from src.backtest.optimizer import BacktestOptimizer
 
         t0 = time.time()
         optimizer = BacktestOptimizer()
-        results = optimizer.grid_search(
+        opt_result = optimizer.grid_search(
             param_ranges=param_ranges,
             start_date=start_date,
             end_date=end_date,
             target_metric=target_metric,
         )
         duration = time.time() - t0
+
+        results = opt_result["results"]
+        best_by_city = opt_result.get("best_by_city", {})
 
         # Sort by target metric descending
         results.sort(key=lambda r: r.get("metrics", {}).get(target_metric, 0), reverse=True)
@@ -1107,15 +1129,17 @@ def api_run_optimization():
         cur.execute(
             """INSERT INTO optimization_runs
                (name, param_ranges_json, target_metric, total_combinations,
-                results_json, best_params_json, created_at, duration_seconds)
-               VALUES (?,?,?,?,?,?,?,?)""",
+                results_json, best_params_json, best_by_city_json,
+                created_at, duration_seconds)
+               VALUES (?,?,?,?,?,?,?,?,?)""",
             (
                 name,
-                json.dumps(param_ranges),
+                json.dumps(data.get("param_ranges", {})),
                 target_metric,
                 len(results),
                 json.dumps(results),
                 json.dumps(best.get("params", {})),
+                json.dumps(best_by_city),
                 now, duration,
             ),
         )
