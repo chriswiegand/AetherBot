@@ -17,7 +17,10 @@ import time
 from datetime import datetime, date, timezone
 from pathlib import Path
 
-from flask import Flask, jsonify, request, send_from_directory
+import queue
+import uuid
+
+from flask import Flask, Response, jsonify, request, send_from_directory, stream_with_context
 
 # Add project root to path so we can import src modules
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
@@ -50,6 +53,10 @@ _refresh_locks = {s: threading.Lock() for s in ("gfs", "hrrr", "nws")}
 _refresh_status: dict[str, dict] = {
     s: {"running": False, "last_result": None} for s in ("gfs", "hrrr", "nws")
 }
+
+# Optimization job state for async (SSE) optimization runs
+_opt_jobs: dict[str, dict] = {}
+_opt_lock = threading.Lock()
 
 
 def _do_direct_fetch(source: str):
@@ -681,11 +688,13 @@ def _ensure_optimization_table(conn):
             duration_seconds REAL
         )
     """)
-    # Add best_by_city_json column if missing (migrate existing tables)
+    # Add columns if missing (migrate existing tables)
     cur = conn.execute("PRAGMA table_info(optimization_runs)")
     cols = {row[1] for row in cur.fetchall()}
     if "best_by_city_json" not in cols:
         conn.execute("ALTER TABLE optimization_runs ADD COLUMN best_by_city_json TEXT")
+    if "strategy_type" not in cols:
+        conn.execute("ALTER TABLE optimization_runs ADD COLUMN strategy_type TEXT DEFAULT 'full_grid'")
 
 
 def _ensure_strategy_id_column(conn):
@@ -1156,6 +1165,214 @@ def api_run_optimization():
         import traceback
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# ADAPTIVE OPTIMIZATION (async with SSE progress)
+# ---------------------------------------------------------------------------
+
+def _convert_range_specs(param_ranges: dict) -> dict:
+    """Convert {min, max, step} specs to value arrays in-place, return result."""
+    for key, spec in list(param_ranges.items()):
+        if isinstance(spec, dict) and "min" in spec and "max" in spec and "step" in spec:
+            values = []
+            v = float(spec["min"])
+            step = float(spec["step"])
+            mx = float(spec["max"])
+            while v <= mx + 1e-9:
+                values.append(round(v, 6))
+                v += step
+            param_ranges[key] = values
+    return param_ranges
+
+
+@app.route("/api/optimize/start", methods=["POST"])
+def api_start_optimization():
+    """Launch an adaptive optimization in a background thread.
+
+    Returns a job_id immediately; use /api/optimize/stream/<job_id>
+    for SSE progress events.
+    """
+    try:
+        data = request.get_json(force=True)
+        param_ranges = data.get("param_ranges", {})
+        start_date = data.get("start_date")
+        end_date = data.get("end_date")
+        target_metric = data.get("target_metric", "sharpe_ratio")
+        name = data.get("name", "Optimization " + datetime.utcnow().strftime("%Y-%m-%d %H:%M"))
+        strategy = data.get("strategy", "mc_refine")
+        phase1_budget = int(data.get("phase1_budget", 200))
+
+        if not param_ranges or not start_date or not end_date:
+            return jsonify({"error": "param_ranges, start_date, end_date required"}), 400
+
+        # Convert range specs to value arrays
+        raw_ranges = json.dumps(data.get("param_ranges", {}))  # save original
+        param_ranges = _convert_range_specs(param_ranges)
+
+        job_id = str(uuid.uuid4())
+        job = {
+            "status": "running",
+            "phase": 0,
+            "current": 0,
+            "total": 0,
+            "queue": queue.Queue(),
+            "optimizer": None,
+            "name": name,
+            "raw_ranges": raw_ranges,
+            "target_metric": target_metric,
+            "strategy_type": strategy,
+        }
+
+        with _opt_lock:
+            _opt_jobs[job_id] = job
+
+        def run():
+            from src.backtest.optimizer import BacktestOptimizer, OptimizationAborted
+
+            optimizer = BacktestOptimizer()
+            job["optimizer"] = optimizer
+            t0 = time.time()
+
+            def progress_cb(phase, current, total, best_so_far, entry):
+                job["phase"] = phase
+                job["current"] = current
+                job["total"] = total
+                metric_val = (
+                    entry["metrics"].get(target_metric)
+                    if entry and "metrics" in entry and "error" not in entry["metrics"]
+                    else None
+                )
+                job["queue"].put({
+                    "event": "progress",
+                    "phase": phase,
+                    "current": current,
+                    "total": total,
+                    "best_so_far": round(best_so_far, 6) if best_so_far > -1e10 else None,
+                    "metric_val": round(metric_val, 6) if metric_val is not None else None,
+                })
+
+            try:
+                opt_result = optimizer.adaptive_search(
+                    param_ranges=param_ranges,
+                    start_date=start_date,
+                    end_date=end_date,
+                    target_metric=target_metric,
+                    strategy=strategy,
+                    progress_cb=progress_cb,
+                    phase1_budget=phase1_budget,
+                )
+                duration = time.time() - t0
+
+                results = opt_result["results"]
+                best_by_city = opt_result.get("best_by_city", {})
+
+                # Sort by target metric
+                results.sort(
+                    key=lambda r: r.get("metrics", {}).get(target_metric, 0),
+                    reverse=True,
+                )
+                best = results[0] if results else {}
+
+                # Save to DB
+                conn = get_db_rw()
+                _ensure_optimization_table(conn)
+                cur = conn.cursor()
+                now = datetime.utcnow().isoformat() + "Z"
+                cur.execute(
+                    """INSERT INTO optimization_runs
+                       (name, param_ranges_json, target_metric, total_combinations,
+                        results_json, best_params_json, best_by_city_json,
+                        created_at, duration_seconds, strategy_type)
+                       VALUES (?,?,?,?,?,?,?,?,?,?)""",
+                    (
+                        name,
+                        raw_ranges,
+                        target_metric,
+                        len(results),
+                        json.dumps(results),
+                        json.dumps(best.get("params", {})),
+                        json.dumps(best_by_city),
+                        now, duration, strategy,
+                    ),
+                )
+                run_id = cur.lastrowid
+                conn.commit()
+                conn.close()
+
+                job["status"] = "done"
+                job["queue"].put({
+                    "event": "done",
+                    "run_id": run_id,
+                    "duration": round(duration, 1),
+                    "total_evaluated": len(results),
+                })
+
+            except OptimizationAborted:
+                job["status"] = "aborted"
+                job["queue"].put({"event": "error", "message": "Aborted by user"})
+
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+                job["status"] = "error"
+                job["queue"].put({"event": "error", "message": str(e)})
+
+        thread = threading.Thread(target=run, daemon=True)
+        thread.start()
+
+        return jsonify({"job_id": job_id}), 202
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/optimize/stream/<job_id>")
+def api_stream_optimization(job_id):
+    """SSE endpoint for real-time optimization progress."""
+    with _opt_lock:
+        job = _opt_jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Unknown job"}), 404
+
+    def generate():
+        while True:
+            try:
+                msg = job["queue"].get(timeout=30)
+                yield f"data: {json.dumps(msg)}\n\n"
+                if msg.get("event") in ("done", "error"):
+                    break
+            except queue.Empty:
+                # Heartbeat to keep connection alive
+                yield f"data: {json.dumps({'event': 'heartbeat'})}\n\n"
+
+        # Clean up job after terminal event
+        with _opt_lock:
+            _opt_jobs.pop(job_id, None)
+
+    return Response(
+        stream_with_context(generate()),
+        mimetype="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+@app.route("/api/optimize/abort/<job_id>", methods=["POST"])
+def api_abort_optimization(job_id):
+    """Signal a running optimization to stop."""
+    with _opt_lock:
+        job = _opt_jobs.get(job_id)
+    if not job:
+        return jsonify({"error": "Unknown job"}), 404
+
+    optimizer = job.get("optimizer")
+    if optimizer:
+        optimizer.request_abort()
+        return jsonify({"status": "abort_requested"})
+    return jsonify({"error": "Optimizer not yet started"}), 409
 
 
 @app.route("/api/optimize/runs", methods=["GET"])

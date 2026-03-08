@@ -542,6 +542,38 @@
     background:var(--bg-card-alt);border:1px solid var(--border);
     border-radius:4px;padding:2px 8px;margin-left:8px;
   }
+  .combo-count-badge.warn{color:var(--red);}
+  .form-hint{
+    font-size:.68rem;color:var(--text-muted);margin-top:2px;
+  }
+
+  /* ---------- Progress Bar ---------- */
+  .progress-container{
+    background:var(--bg-card);border:1px solid var(--border);
+    border-radius:var(--radius);padding:16px;margin-top:12px;
+  }
+  .progress-header{
+    display:flex;justify-content:space-between;
+    margin-bottom:8px;font-size:.85rem;font-weight:600;
+  }
+  .progress-bar-track{
+    height:8px;background:var(--bg-canvas);border-radius:4px;
+    overflow:hidden;margin-bottom:6px;
+  }
+  .progress-bar-fill{
+    height:100%;background:var(--accent);border-radius:4px;
+    transition:width 0.3s ease;
+  }
+  .progress-bar-fill.phase2{background:var(--green);}
+  .progress-detail{
+    font-size:.75rem;color:var(--text-secondary);
+  }
+  .phase-badge{
+    display:inline-block;padding:1px 6px;border-radius:3px;
+    font-size:.65rem;font-weight:700;letter-spacing:.5px;
+  }
+  .phase-badge.p1{background:rgba(88,166,255,0.2);color:#58a6ff;}
+  .phase-badge.p2{background:rgba(63,185,80,0.2);color:#3fb950;}
 
   /* ---------- Tabs ---------- */
   .tabs{
@@ -897,6 +929,20 @@
         <div class="form-section-title">Optimization Settings</div>
         <div class="form-grid">
           <div class="form-group">
+            <label class="form-label">Search Strategy</label>
+            <select class="form-input" id="opt-strategy" onchange="onStrategyChange()">
+              <option value="mc_refine" selected>Monte Carlo → Refine (recommended)</option>
+              <option value="coarse_fine">Coarse → Fine Grid</option>
+              <option value="full_grid">Full Grid (exhaustive)</option>
+            </select>
+            <div class="form-hint" id="opt-strategy-hint">Samples ~200 random points, then fine-grids the best region</div>
+          </div>
+          <div class="form-group" id="opt-budget-group">
+            <label class="form-label">Phase 1 Budget</label>
+            <input type="number" class="form-input" id="opt-phase1-budget" value="200" min="50" max="500" step="50" onchange="updateComboCount()">
+            <div class="form-hint">Max combinations in the exploration phase</div>
+          </div>
+          <div class="form-group">
             <label class="form-label">Target Metric</label>
             <select class="form-input" id="opt-target-metric">
               <option value="sharpe_ratio">Sharpe Ratio</option>
@@ -922,6 +968,26 @@
 
       <div style="display:flex;justify-content:flex-end;gap:8px">
         <button class="btn btn-primary" id="opt-run-btn" onclick="runOptimization()">Run Optimization</button>
+      </div>
+
+      <!-- Progress area (hidden until optimization starts) -->
+      <div id="opt-progress-area" style="display:none">
+        <div class="progress-container">
+          <div class="progress-header">
+            <span id="opt-progress-label">Starting...</span>
+            <span id="opt-progress-pct">0%</span>
+          </div>
+          <div class="progress-bar-track">
+            <div class="progress-bar-fill" id="opt-progress-bar" style="width:0%"></div>
+          </div>
+          <div class="progress-detail" id="opt-progress-detail">0 / 0 combinations</div>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
+            <button class="btn btn-sm" style="background:var(--red);color:#fff;padding:4px 12px;font-size:.75rem" id="opt-abort-btn" onclick="abortOptimization()">Abort</button>
+          </div>
+        </div>
+        <div class="chart-wrap" id="opt-live-chart-wrap" style="height:200px;margin-top:12px">
+          <canvas id="opt-live-chart"></canvas>
+        </div>
       </div>
     </div>
 
@@ -952,15 +1018,16 @@
             <thead>
               <tr>
                 <th onclick="sortOptTable(0)">Rank</th>
-                <th onclick="sortOptTable(1)">Edge Thresh</th>
-                <th onclick="sortOptTable(2)">Min Prob</th>
-                <th onclick="sortOptTable(3)">Kelly Frac</th>
-                <th onclick="sortOptTable(4)">Max Pos %</th>
-                <th onclick="sortOptTable(5)">Lead Hrs</th>
-                <th onclick="sortOptTable(6)">Sharpe</th>
-                <th onclick="sortOptTable(7)">Win Rate</th>
-                <th onclick="sortOptTable(8)">PnL</th>
-                <th onclick="sortOptTable(9)">Profit Factor</th>
+                <th>Ph</th>
+                <th onclick="sortOptTable(2)">Edge Thresh</th>
+                <th onclick="sortOptTable(3)">Min Prob</th>
+                <th onclick="sortOptTable(4)">Kelly Frac</th>
+                <th onclick="sortOptTable(5)">Max Pos %</th>
+                <th onclick="sortOptTable(6)">Lead Hrs</th>
+                <th onclick="sortOptTable(7)">Sharpe</th>
+                <th onclick="sortOptTable(8)">Win Rate</th>
+                <th onclick="sortOptTable(9)">PnL</th>
+                <th onclick="sortOptTable(10)">Profit Factor</th>
               </tr>
             </thead>
             <tbody id="opt-results-body">
@@ -2023,11 +2090,46 @@ function updateComboCount() {
     var n = Math.max(1, Math.floor((hi - lo) / step + 1.001));
     total *= n;
   });
-  $('opt-combo-count').textContent = total + ' combination' + (total !== 1 ? 's' : '');
+
+  var strategy = $('opt-strategy').value;
+  var badge = $('opt-combo-count');
+
+  if (strategy === 'full_grid') {
+    badge.textContent = total + ' combination' + (total !== 1 ? 's' : '');
+    badge.classList.toggle('warn', total > 1000);
+  } else {
+    var budget = parseInt($('opt-phase1-budget').value) || 200;
+    var estPhase2 = Math.min(total, Math.round(Math.pow(total, 0.4)));
+    var est = Math.min(total, budget + estPhase2);
+    badge.textContent = '~' + est + ' est. (of ' + total + ' full)';
+    badge.classList.remove('warn');
+  }
 }
 
-// --- Run Optimization ---
-async function runOptimization() {
+function onStrategyChange() {
+  var val = $('opt-strategy').value;
+  var hints = {
+    'mc_refine': 'Samples ~200 random points, then fine-grids the best region',
+    'coarse_fine': 'Runs a coarse grid first, then refines the best area',
+    'full_grid': 'Tests every combination (slowest, most thorough)'
+  };
+  $('opt-strategy-hint').textContent = hints[val] || '';
+  $('opt-budget-group').style.display = val === 'full_grid' ? 'none' : '';
+  updateComboCount();
+}
+
+// --- Optimization State ---
+var _currentJobId = null;
+var _eventSource = null;
+var _liveChart = null;
+var _phase1Count = 0;  // track phase 1 total for vertical line
+
+function resetOptButton() {
+  $('opt-run-btn').disabled = false;
+  $('opt-run-btn').textContent = 'Run Optimization';
+}
+
+function _collectParamRanges() {
   var paramRanges = {};
   document.querySelectorAll('.slider-row').forEach(function(row) {
     var param = row.dataset.param;
@@ -2037,13 +2139,233 @@ async function runOptimization() {
     var step = parseFloat(row.querySelector('.step-input').value);
     paramRanges[param] = { min: lo, max: hi, step: step };
   });
+  return paramRanges;
+}
 
+function _createLiveChart(metricLabel) {
+  if (_liveChart) { _liveChart.destroy(); _liveChart = null; }
+  $('opt-live-chart-wrap').style.display = 'block';
+  var ctx = $('opt-live-chart').getContext('2d');
+  var grad = ctx.createLinearGradient(0, 0, 0, 180);
+  grad.addColorStop(0, 'rgba(88,166,255,0.25)');
+  grad.addColorStop(1, 'rgba(0,0,0,0)');
+
+  _liveChart = new Chart(ctx, {
+    type: 'line',
+    data: {
+      labels: [],
+      datasets: [{
+        label: 'Best ' + metricLabel,
+        data: [],
+        borderColor: '#58a6ff',
+        backgroundColor: grad,
+        borderWidth: 2,
+        pointRadius: 0,
+        pointHitRadius: 6,
+        fill: true,
+        tension: 0.3
+      }]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      animation: false,
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          backgroundColor: '#1c2128',
+          titleColor: '#e6edf3',
+          bodyColor: '#e6edf3',
+          borderColor: '#30363d',
+          borderWidth: 1
+        },
+        annotation: {
+          annotations: {}
+        }
+      },
+      scales: {
+        x: {
+          title: { display: true, text: 'Iteration', color: '#8b949e', font: { size: 10 } },
+          grid: { color: 'rgba(48,54,61,0.5)' },
+          ticks: { font: { size: 10 } }
+        },
+        y: {
+          title: { display: true, text: metricLabel, color: '#8b949e', font: { size: 10 } },
+          grid: { color: 'rgba(48,54,61,0.5)' },
+          ticks: { font: { size: 10 } }
+        }
+      }
+    }
+  });
+  _phase1Count = 0;
+}
+
+function _updateLiveChart(iteration, bestSoFar, phase) {
+  if (!_liveChart || bestSoFar == null) return;
+
+  _liveChart.data.labels.push(iteration);
+  _liveChart.data.datasets[0].data.push(bestSoFar);
+
+  // Draw vertical line at phase transition
+  if (phase === 2 && _phase1Count === 0) {
+    _phase1Count = iteration - 1;
+    // Add phase transition annotation via a second dataset (vertical line)
+    if (_liveChart.data.datasets.length === 1) {
+      _liveChart.data.datasets.push({
+        label: 'Phase 2 Start',
+        data: [],
+        borderColor: '#3fb950',
+        borderWidth: 1,
+        borderDash: [4, 4],
+        pointRadius: 0,
+        fill: false,
+        tension: 0
+      });
+    }
+    // Fill the P2-start dataset with nulls up to transition, then a vertical spike
+    var d2 = _liveChart.data.datasets[1].data;
+    while (d2.length < iteration - 2) d2.push(null);
+    // Get current y range
+    var yMin = Math.min.apply(null, _liveChart.data.datasets[0].data.filter(function(v) { return v != null; }));
+    var yMax = Math.max.apply(null, _liveChart.data.datasets[0].data.filter(function(v) { return v != null; }));
+    d2.push(yMin);
+    d2.push(yMax);
+
+    // Change main line to green from here on
+    _liveChart.data.datasets[0].borderColor = '#3fb950';
+    var ctx2 = $('opt-live-chart').getContext('2d');
+    var grad2 = ctx2.createLinearGradient(0, 0, 0, 180);
+    grad2.addColorStop(0, 'rgba(63,185,80,0.25)');
+    grad2.addColorStop(1, 'rgba(0,0,0,0)');
+    _liveChart.data.datasets[0].backgroundColor = grad2;
+  }
+
+  _liveChart.update('none');
+}
+
+// --- Run Optimization ---
+async function runOptimization() {
+  var strategy = $('opt-strategy').value;
+
+  // Full grid: use synchronous endpoint
+  if (strategy === 'full_grid') {
+    return runFullGridOptimization();
+  }
+
+  // Adaptive: use async SSE endpoint
+  var paramRanges = _collectParamRanges();
   var startDate = $('opt-start-date').value;
   var endDate = $('opt-end-date').value;
-  if (!startDate || !endDate) {
-    showToast('Please set date range', 'error');
+  if (!startDate || !endDate) { showToast('Please set date range', 'error'); return; }
+
+  var targetMetric = $('opt-target-metric').value;
+  var name = $('opt-name').value.trim() || 'Optimization ' + new Date().toISOString().split('T')[0];
+  var phase1Budget = parseInt($('opt-phase1-budget').value) || 200;
+
+  $('opt-run-btn').disabled = true;
+  $('opt-run-btn').innerHTML = '<span class="spinner"></span> Running...';
+  $('opt-progress-area').style.display = 'block';
+  $('opt-progress-label').textContent = 'Starting...';
+  $('opt-progress-bar').style.width = '0%';
+  $('opt-progress-bar').className = 'progress-bar-fill';
+  $('opt-progress-pct').textContent = '0%';
+  $('opt-progress-detail').textContent = '';
+
+  var metricLabels = { sharpe_ratio: 'Sharpe', win_rate: 'Win Rate', gross_pnl: 'PnL ($)', profit_factor: 'Profit Factor' };
+  _createLiveChart(metricLabels[targetMetric] || targetMetric);
+
+  // Start async job
+  var startResult = await safeFetch('/api/optimize/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      param_ranges: paramRanges,
+      start_date: startDate,
+      end_date: endDate,
+      target_metric: targetMetric,
+      name: name,
+      strategy: strategy,
+      phase1_budget: phase1Budget
+    })
+  });
+
+  if (!startResult || !startResult.job_id) {
+    showToast('Failed to start optimization', 'error');
+    $('opt-progress-area').style.display = 'none';
+    if (_liveChart) { _liveChart.destroy(); _liveChart = null; }
+    $('opt-live-chart-wrap').style.display = 'none';
+    resetOptButton();
     return;
   }
+
+  _currentJobId = startResult.job_id;
+  var iterCount = 0;
+
+  // Connect SSE stream
+  _eventSource = new EventSource(API_BASE + '/api/optimize/stream/' + _currentJobId);
+
+  _eventSource.onmessage = function(event) {
+    var msg = JSON.parse(event.data);
+
+    if (msg.event === 'progress') {
+      iterCount++;
+      var pct = msg.total > 0 ? Math.round(msg.current / msg.total * 100) : 0;
+      var phaseLabel = msg.phase === 1 ? 'Phase 1: Exploring' : 'Phase 2: Refining';
+      $('opt-progress-label').textContent = phaseLabel;
+      $('opt-progress-pct').textContent = pct + '%';
+      $('opt-progress-bar').style.width = pct + '%';
+      $('opt-progress-bar').className = 'progress-bar-fill' + (msg.phase === 2 ? ' phase2' : '');
+      $('opt-progress-detail').textContent = 'Phase ' + msg.phase + ': ' + msg.current + ' / ' + msg.total + ' combinations';
+      _updateLiveChart(iterCount, msg.best_so_far, msg.phase);
+    }
+
+    if (msg.event === 'done') {
+      _eventSource.close();
+      _eventSource = null;
+      $('opt-progress-label').textContent = 'Complete!';
+      $('opt-progress-pct').textContent = '100%';
+      $('opt-progress-bar').style.width = '100%';
+      $('opt-progress-bar').className = 'progress-bar-fill phase2';
+      resetOptButton();
+      showToast('Optimization completed in ' + msg.duration + 's (' + msg.total_evaluated + ' combos)', 'success');
+
+      setTimeout(function() {
+        $('opt-progress-area').style.display = 'none';
+        if (_liveChart) { _liveChart.destroy(); _liveChart = null; }
+        $('opt-live-chart-wrap').style.display = 'none';
+      }, 3000);
+
+      if (msg.run_id) displayOptimizationRun(msg.run_id);
+      loadOptimizationRuns();
+    }
+
+    if (msg.event === 'error') {
+      _eventSource.close();
+      _eventSource = null;
+      $('opt-progress-area').style.display = 'none';
+      if (_liveChart) { _liveChart.destroy(); _liveChart = null; }
+      $('opt-live-chart-wrap').style.display = 'none';
+      resetOptButton();
+      showToast('Optimization failed: ' + msg.message, 'error');
+    }
+  };
+
+  _eventSource.onerror = function() {
+    if (_eventSource) { _eventSource.close(); _eventSource = null; }
+    $('opt-progress-area').style.display = 'none';
+    if (_liveChart) { _liveChart.destroy(); _liveChart = null; }
+    $('opt-live-chart-wrap').style.display = 'none';
+    resetOptButton();
+    showToast('Lost connection to optimization server', 'error');
+  };
+}
+
+// --- Full Grid (synchronous, for backward compat) ---
+async function runFullGridOptimization() {
+  var paramRanges = _collectParamRanges();
+  var startDate = $('opt-start-date').value;
+  var endDate = $('opt-end-date').value;
+  if (!startDate || !endDate) { showToast('Please set date range', 'error'); return; }
 
   var targetMetric = $('opt-target-metric').value;
   var name = $('opt-name').value.trim() || 'Optimization ' + new Date().toISOString().split('T')[0];
@@ -2063,20 +2385,28 @@ async function runOptimization() {
     })
   });
 
-  $('opt-run-btn').disabled = false;
-  $('opt-run-btn').textContent = 'Run Optimization';
+  resetOptButton();
 
   if (result) {
     showToast('Optimization completed', 'success');
-    if (result.id) {
-      displayOptimizationRun(result.id);
-    } else {
-      displayOptimizationResults(result);
-    }
+    if (result.id) displayOptimizationRun(result.id);
+    else displayOptimizationResults(result);
     loadOptimizationRuns();
   } else {
     showToast('Optimization failed', 'error');
   }
+}
+
+function abortOptimization() {
+  if (_currentJobId) {
+    safeFetch('/api/optimize/abort/' + _currentJobId, { method: 'POST' });
+  }
+  if (_eventSource) { _eventSource.close(); _eventSource = null; }
+  $('opt-progress-area').style.display = 'none';
+  if (_liveChart) { _liveChart.destroy(); _liveChart = null; }
+  $('opt-live-chart-wrap').style.display = 'none';
+  resetOptButton();
+  showToast('Optimization aborted', 'warning');
 }
 
 // --- Load Past Runs ---
@@ -2125,7 +2455,7 @@ function displayOptimizationResults(data) {
     // Flatten nested {params:{...}, metrics:{...}} into flat objects
     results = raw.map(function(r) {
       if (r.params || r.metrics) {
-        return Object.assign({}, r.params || {}, r.metrics || {}, {brier_score: r.brier_score, city_metrics: r.city_metrics});
+        return Object.assign({}, r.params || {}, r.metrics || {}, {brier_score: r.brier_score, city_metrics: r.city_metrics, phase: r.phase});
       }
       return r;
     });
@@ -2241,14 +2571,16 @@ var _optSortDir = 'desc';
 function renderOptTable() {
   var tbody = $('opt-results-body');
   if (!_optTableData.length) {
-    tbody.innerHTML = '<tr><td colspan="10" class="no-data">No results</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11" class="no-data">No results</td></tr>';
     return;
   }
 
   tbody.innerHTML = _optTableData.map(function(r, i) {
     var isBest = (i === 0);
+    var phaseBadge = r.phase ? '<span class="phase-badge ' + (r.phase === 2 ? 'p2' : 'p1') + '">P' + r.phase + '</span>' : '-';
     return '<tr style="' + (isBest ? 'background:rgba(63,185,80,.08)' : '') + '">'
       + '<td style="font-weight:700;' + (isBest ? 'color:var(--green)' : '') + '">#' + (i + 1) + '</td>'
+      + '<td>' + phaseBadge + '</td>'
       + '<td>' + (r.edge_threshold != null ? (r.edge_threshold * 100).toFixed(1) + '%' : '--') + '</td>'
       + '<td>' + (r.min_model_prob != null ? (r.min_model_prob * 100).toFixed(0) + '%' : '--') + '</td>'
       + '<td>' + (r.fractional_kelly != null ? (r.fractional_kelly * 100).toFixed(0) + '%' : '--') + '</td>'
@@ -2270,7 +2602,7 @@ function sortOptTable(colIdx) {
     _optSortDir = 'desc';
   }
 
-  var keys = [null, 'edge_threshold', 'min_model_prob', 'fractional_kelly', 'max_position_pct', 'max_lead_hours', 'sharpe_ratio', 'win_rate', 'gross_pnl', 'profit_factor'];
+  var keys = [null, null, 'edge_threshold', 'min_model_prob', 'fractional_kelly', 'max_position_pct', 'max_lead_hours', 'sharpe_ratio', 'win_rate', 'gross_pnl', 'profit_factor'];
   var key = keys[colIdx];
   if (!key) return;
 
@@ -2312,6 +2644,7 @@ setDefaultDates();
 loadStrategies();
 loadOptimizationRuns();
 initSliders();
+onStrategyChange();
 </script>
 </body>
 </html>
