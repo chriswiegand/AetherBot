@@ -1856,7 +1856,7 @@ async function loadOptimizationRuns() {
       + '  <div class="run-item-info">' + esc(run.name || 'Run #' + run.id) + '</div>'
       + '  <div class="run-item-meta">' + esc(created) + ' | Target: ' + esc(metric) + '</div>'
       + '</div>'
-      + '<span class="badge badge-blue">' + (run.total_combos || '?') + ' combos</span>'
+      + '<span class="badge badge-blue">' + (run.total_combinations || run.total_combos || '?') + ' combos</span>'
       + '</div>';
   }).join('');
 }
@@ -1877,8 +1877,16 @@ function displayOptimizationResults(data) {
 
   var results = [];
   try {
-    if (data.results) results = typeof data.results === 'string' ? JSON.parse(data.results) : data.results;
-    if (data.results_json) results = typeof data.results_json === 'string' ? JSON.parse(data.results_json) : data.results_json;
+    var raw = [];
+    if (data.results) raw = typeof data.results === 'string' ? JSON.parse(data.results) : data.results;
+    if (data.results_json) raw = typeof data.results_json === 'string' ? JSON.parse(data.results_json) : data.results_json;
+    // Flatten nested {params:{...}, metrics:{...}} into flat objects
+    results = raw.map(function(r) {
+      if (r.params || r.metrics) {
+        return Object.assign({}, r.params || {}, r.metrics || {}, {brier_score: r.brier_score});
+      }
+      return r;  // already flat
+    });
   } catch (e) {
     console.warn('Parse error:', e);
   }
