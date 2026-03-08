@@ -575,6 +575,33 @@
   .phase-badge.p1{background:rgba(88,166,255,0.2);color:#58a6ff;}
   .phase-badge.p2{background:rgba(63,185,80,0.2);color:#3fb950;}
 
+  /* ---------- Live Discoveries Table ---------- */
+  .live-discoveries-table{
+    width:100%;border-collapse:collapse;font-size:.72rem;
+  }
+  .live-discoveries-table th{
+    padding:4px 6px;text-align:right;font-weight:600;
+    border-bottom:1px solid var(--border);color:var(--text-secondary);
+    white-space:nowrap;
+  }
+  .live-discoveries-table th:first-child,
+  .live-discoveries-table th:nth-child(2){text-align:center;}
+  .live-discoveries-table td{
+    padding:3px 6px;text-align:right;border-bottom:1px solid rgba(48,54,61,0.3);
+  }
+  .live-discoveries-table td:first-child,
+  .live-discoveries-table td:nth-child(2){text-align:center;}
+  .live-discoveries-table tr.new-best{
+    animation:flashGreen .6s ease;
+  }
+  .live-discoveries-table .best-city-cell{
+    text-align:left;font-weight:600;
+  }
+  @keyframes flashGreen{
+    0%{background:rgba(63,185,80,0.25);}
+    100%{background:transparent;}
+  }
+
   /* ---------- Tabs ---------- */
   .tabs{
     display:flex;gap:0;border-bottom:2px solid var(--border);margin-bottom:16px;
@@ -988,6 +1015,36 @@
         <div class="chart-wrap" id="opt-live-chart-wrap" style="height:200px;margin-top:12px">
           <canvas id="opt-live-chart"></canvas>
         </div>
+
+        <!-- Live Top Discoveries Table -->
+        <div id="opt-live-table-wrap" style="margin-top:12px">
+          <div style="font-size:.8rem;font-weight:600;margin-bottom:6px;color:var(--text-primary)">
+            Top Discoveries <span style="font-weight:400;color:var(--text-muted)">(updates live)</span>
+          </div>
+          <div style="overflow-x:auto">
+            <table class="live-discoveries-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>Ph</th>
+                  <th>Edge</th>
+                  <th>MinP</th>
+                  <th>Kelly</th>
+                  <th>MaxPos</th>
+                  <th>Lead</th>
+                  <th title="Sharpe Ratio across all 5 cities combined">Sharpe (Agg)</th>
+                  <th>WR (Agg)</th>
+                  <th>PnL (Agg)</th>
+                  <th title="City with best target metric for this combo">Best City</th>
+                  <th title="Target metric value for the best-performing city">City Metric</th>
+                </tr>
+              </thead>
+              <tbody id="opt-live-tbody">
+                <tr><td colspan="12" class="no-data" style="font-size:.75rem">Waiting for results...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
       </div>
     </div>
 
@@ -1024,14 +1081,14 @@
                 <th onclick="sortOptTable(4)">Kelly Frac</th>
                 <th onclick="sortOptTable(5)">Max Pos %</th>
                 <th onclick="sortOptTable(6)">Lead Hrs</th>
-                <th onclick="sortOptTable(7)">Sharpe</th>
-                <th onclick="sortOptTable(8)">Win Rate</th>
+                <th onclick="sortOptTable(7)" title="Sharpe Ratio aggregated across all 5 cities">Sharpe (Agg)</th>
+                <th onclick="sortOptTable(8)" title="Win Rate aggregated across all 5 cities">WR (Agg)</th>
                 <th onclick="sortOptTable(9)">PnL</th>
                 <th onclick="sortOptTable(10)">Profit Factor</th>
               </tr>
             </thead>
             <tbody id="opt-results-body">
-              <tr><td colspan="10" class="no-data">No results</td></tr>
+              <tr><td colspan="11" class="no-data">No results</td></tr>
             </tbody>
           </table>
         </div>
@@ -2243,6 +2300,91 @@ function _updateLiveChart(iteration, bestSoFar, phase) {
   _liveChart.update('none');
 }
 
+// --- Live Top Discoveries Table ---
+var _liveTopResults = [];  // sorted best-first, max 8 entries
+var _liveTargetMetric = 'sharpe_ratio';
+
+var _METRIC_LABELS = {
+  sharpe_ratio: 'Sharpe',
+  win_rate: 'Win Rate',
+  gross_pnl: 'PnL',
+  profit_factor: 'PF'
+};
+
+function _clearLiveTable() {
+  _liveTopResults = [];
+  $('opt-live-tbody').innerHTML = '<tr><td colspan="12" class="no-data" style="font-size:.75rem">Waiting for results...</td></tr>';
+}
+
+function _addToLiveTable(msg) {
+  if (!msg.params || !msg.metrics) return;
+
+  var m = msg.metrics;
+  var entry = {
+    phase: msg.phase,
+    params: msg.params,
+    sharpe: m.sharpe_ratio || 0,
+    win_rate: m.win_rate || 0,
+    gross_pnl: m.gross_pnl || 0,
+    profit_factor: m.profit_factor || 0,
+    best_city: msg.best_city || '-',
+    best_city_metric: msg.best_city_metric,
+    targetVal: m[_liveTargetMetric] || 0,
+    isNew: msg.is_new_best || false,
+    iter: msg.current
+  };
+
+  // Insert into sorted position (descending by target metric)
+  var inserted = false;
+  for (var i = 0; i < _liveTopResults.length; i++) {
+    if (entry.targetVal > _liveTopResults[i].targetVal) {
+      _liveTopResults.splice(i, 0, entry);
+      inserted = true;
+      break;
+    }
+  }
+  if (!inserted) _liveTopResults.push(entry);
+
+  // Keep max 8
+  if (_liveTopResults.length > 8) _liveTopResults.length = 8;
+
+  // Only re-render if this entry made it into top 8
+  if (_liveTopResults.indexOf(entry) !== -1) {
+    _renderLiveTable(entry);
+  }
+}
+
+function _renderLiveTable(newestEntry) {
+  var tbody = $('opt-live-tbody');
+  var metricLabel = _METRIC_LABELS[_liveTargetMetric] || _liveTargetMetric;
+
+  tbody.innerHTML = _liveTopResults.map(function(r, i) {
+    var isNewest = (newestEntry && r === newestEntry && r.isNew);
+    var p = r.params;
+    var cityColor = CITY_COLORS[r.best_city] || 'var(--text-secondary)';
+    var cityMetricFmt = r.best_city_metric != null
+      ? (_liveTargetMetric === 'win_rate' ? (r.best_city_metric * 100).toFixed(1) + '%'
+         : _liveTargetMetric === 'gross_pnl' ? fmt$(r.best_city_metric)
+         : Number(r.best_city_metric).toFixed(2))
+      : '-';
+
+    return '<tr class="' + (isNewest ? 'new-best' : '') + '" style="' + (i === 0 ? 'background:rgba(63,185,80,.06)' : '') + '">'
+      + '<td style="font-weight:700;' + (i === 0 ? 'color:var(--green)' : '') + '">' + (i + 1) + '</td>'
+      + '<td><span class="phase-badge ' + (r.phase === 2 ? 'p2' : 'p1') + '">P' + r.phase + '</span></td>'
+      + '<td>' + (p.edge_threshold != null ? (p.edge_threshold * 100).toFixed(1) + '%' : '-') + '</td>'
+      + '<td>' + (p.min_model_prob != null ? (p.min_model_prob * 100).toFixed(0) + '%' : '-') + '</td>'
+      + '<td>' + (p.fractional_kelly != null ? (p.fractional_kelly * 100).toFixed(0) + '%' : '-') + '</td>'
+      + '<td>' + (p.max_position_pct != null ? (p.max_position_pct * 100).toFixed(0) + '%' : '-') + '</td>'
+      + '<td>' + (p.max_lead_hours != null ? p.max_lead_hours + 'h' : '-') + '</td>'
+      + '<td>' + Number(r.sharpe).toFixed(2) + '</td>'
+      + '<td>' + (r.win_rate * 100).toFixed(1) + '%</td>'
+      + '<td class="' + pnlClass(r.gross_pnl) + '">' + fmt$(r.gross_pnl) + '</td>'
+      + '<td class="best-city-cell" style="color:' + cityColor + '">' + esc(r.best_city) + '</td>'
+      + '<td>' + cityMetricFmt + '</td>'
+      + '</tr>';
+  }).join('');
+}
+
 // --- Run Optimization ---
 async function runOptimization() {
   var strategy = $('opt-strategy').value;
@@ -2273,6 +2415,8 @@ async function runOptimization() {
 
   var metricLabels = { sharpe_ratio: 'Sharpe', win_rate: 'Win Rate', gross_pnl: 'PnL ($)', profit_factor: 'Profit Factor' };
   _createLiveChart(metricLabels[targetMetric] || targetMetric);
+  _liveTargetMetric = targetMetric;
+  _clearLiveTable();
 
   // Start async job
   var startResult = await safeFetch('/api/optimize/start', {
@@ -2317,6 +2461,7 @@ async function runOptimization() {
       $('opt-progress-bar').className = 'progress-bar-fill' + (msg.phase === 2 ? ' phase2' : '');
       $('opt-progress-detail').textContent = 'Phase ' + msg.phase + ': ' + msg.current + ' / ' + msg.total + ' combinations';
       _updateLiveChart(iterCount, msg.best_so_far, msg.phase);
+      _addToLiveTable(msg);
     }
 
     if (msg.event === 'done') {
@@ -2465,7 +2610,7 @@ function displayOptimizationResults(data) {
 
   if (!Array.isArray(results) || results.length === 0) {
     $('opt-best-card').style.display = 'none';
-    $('opt-results-body').innerHTML = '<tr><td colspan="10" class="no-data">No results data</td></tr>';
+    $('opt-results-body').innerHTML = '<tr><td colspan="11" class="no-data">No results data</td></tr>';
     clearCityMarkers();
     return;
   }
@@ -2481,8 +2626,8 @@ function displayOptimizationResults(data) {
   if (best.fractional_kelly != null) bestParams.push('<span class="param-chip"><b>Kelly:</b> ' + (best.fractional_kelly * 100).toFixed(0) + '%</span>');
   if (best.max_position_pct != null) bestParams.push('<span class="param-chip"><b>MaxPos:</b> ' + (best.max_position_pct * 100).toFixed(0) + '%</span>');
   if (best.max_lead_hours != null) bestParams.push('<span class="param-chip"><b>Lead:</b> ' + best.max_lead_hours + 'h</span>');
-  if (best.sharpe_ratio != null) bestParams.push('<span class="param-chip"><b>Sharpe:</b> ' + Number(best.sharpe_ratio).toFixed(2) + '</span>');
-  if (best.win_rate != null) bestParams.push('<span class="param-chip"><b>WR:</b> ' + fmtPct(best.win_rate) + '</span>');
+  if (best.sharpe_ratio != null) bestParams.push('<span class="param-chip" title="Aggregate across all 5 cities"><b>Sharpe (Agg):</b> ' + Number(best.sharpe_ratio).toFixed(2) + '</span>');
+  if (best.win_rate != null) bestParams.push('<span class="param-chip" title="Aggregate across all 5 cities"><b>WR (Agg):</b> ' + fmtPct(best.win_rate) + '</span>');
   if (best.gross_pnl != null) bestParams.push('<span class="param-chip"><b>PnL:</b> ' + fmt$(best.gross_pnl) + '</span>');
   $('opt-best-params').innerHTML = bestParams.join('');
 
@@ -2548,7 +2693,7 @@ function renderCityMarkers(bestByCity) {
       var m = entry.metrics || {};
       var tip = document.createElement('div');
       tip.className = 'city-marker__tooltip';
-      tip.innerHTML = '<strong style="color:' + CITY_COLORS[city] + '">' + esc(city) + '</strong> — ' + fmtV
+      tip.innerHTML = '<strong style="color:' + CITY_COLORS[city] + '">' + esc(city) + ' only</strong> — ' + fmtV
         + '<br>WR: ' + (m.win_rate != null ? (m.win_rate * 100).toFixed(1) + '%' : '--')
         + ' · PnL: ' + (m.gross_pnl != null ? fmt$(m.gross_pnl) : '--')
         + ' · Sharpe: ' + (m.sharpe_ratio != null ? Number(m.sharpe_ratio).toFixed(1) : '--');

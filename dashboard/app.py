@@ -1234,23 +1234,60 @@ def api_start_optimization():
             job["optimizer"] = optimizer
             t0 = time.time()
 
+            _prev_best = [None]  # mutable ref for closure
+
             def progress_cb(phase, current, total, best_so_far, entry):
                 job["phase"] = phase
                 job["current"] = current
                 job["total"] = total
-                metric_val = (
-                    entry["metrics"].get(target_metric)
-                    if entry and "metrics" in entry and "error" not in entry["metrics"]
-                    else None
+                has_error = not entry or "error" in entry.get("metrics", {})
+                metrics = entry.get("metrics", {}) if not has_error else {}
+                metric_val = metrics.get(target_metric)
+
+                # Detect if this combo set a new best
+                is_new_best = (
+                    not has_error
+                    and metric_val is not None
+                    and best_so_far > -1e10
+                    and abs(metric_val - best_so_far) < 1e-9
+                    and _prev_best[0] != best_so_far
                 )
-                job["queue"].put({
+                if is_new_best:
+                    _prev_best[0] = best_so_far
+
+                # Find best city for this combo
+                city_metrics = entry.get("city_metrics", {}) if not has_error else {}
+                best_city = None
+                best_city_val = -float("inf")
+                for city, cm in city_metrics.items():
+                    cv = cm.get(target_metric, 0)
+                    if cv > best_city_val:
+                        best_city_val = cv
+                        best_city = city
+
+                evt = {
                     "event": "progress",
                     "phase": phase,
                     "current": current,
                     "total": total,
                     "best_so_far": round(best_so_far, 6) if best_so_far > -1e10 else None,
                     "metric_val": round(metric_val, 6) if metric_val is not None else None,
-                })
+                    "is_new_best": is_new_best,
+                }
+                # Include full entry data (params + key metrics + best city)
+                if not has_error:
+                    evt["params"] = entry.get("params", {})
+                    evt["metrics"] = {
+                        k: round(v, 6) if isinstance(v, float) else v
+                        for k, v in metrics.items()
+                    }
+                    evt["best_city"] = best_city
+                    evt["best_city_metric"] = (
+                        round(best_city_val, 6)
+                        if best_city_val > -float("inf") else None
+                    )
+
+                job["queue"].put(evt)
 
             try:
                 opt_result = optimizer.adaptive_search(
