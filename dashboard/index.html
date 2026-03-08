@@ -325,6 +325,16 @@
   .side-yes{color:var(--green);font-weight:600}
   .side-no{color:var(--red);font-weight:600}
 
+  /* ---------- Mark-to-market sparklines & indicators ---------- */
+  .sparkline-cell{padding:4px 6px}
+  .sparkline-canvas{display:block;width:80px;height:24px}
+  .move-positive{color:var(--green)}
+  .move-negative{color:var(--red)}
+  .edge-improving{color:var(--green)}
+  .edge-worsening{color:var(--red)}
+  .edge-stable{color:var(--text-secondary)}
+  .pnl-wrap small{opacity:.7;margin-left:2px}
+
   .no-data{
     text-align:center;
     padding:32px 16px;
@@ -587,16 +597,21 @@
         <thead>
           <tr>
             <th>Market</th>
+            <th>City</th>
             <th>Side</th>
             <th>Qty</th>
-            <th>Price</th>
-            <th>Cost</th>
-            <th>Edge</th>
-            <th>City</th>
+            <th>Entry</th>
+            <th>Now</th>
+            <th>Move</th>
+            <th>Unreal. PnL</th>
+            <th>Edge Now</th>
+            <th>Edge &Delta;</th>
+            <th>Trend</th>
+            <th>Signal</th>
           </tr>
         </thead>
         <tbody id="positions-body">
-          <tr><td colspan="7" class="no-data">Loading...</td></tr>
+          <tr><td colspan="12" class="no-data">Loading...</td></tr>
         </tbody>
       </table>
     </div>
@@ -679,6 +694,15 @@
 // ---------------------------------------------------------------------------
 const API_BASE = '';          // same origin; change if API is elsewhere
 const REFRESH_MS = 30000;     // 30 seconds
+
+// Kalshi series → correct web URLs (individual market tickers are API-only)
+var KALSHI_SERIES_URLS = {
+  KXHIGHNY:  'https://kalshi.com/markets/kxhighny/highest-temperature-in-new-york',
+  KXHIGHCHI: 'https://kalshi.com/markets/kxhighchi/highest-temperature-in-chicago',
+  KXHIGHMIA: 'https://kalshi.com/markets/kxhighmia/highest-temperature-in-miami',
+  KXHIGHLAX: 'https://kalshi.com/markets/kxhighlax/highest-temperature-in-los-angeles',
+  KXHIGHDEN: 'https://kalshi.com/markets/kxhighden/highest-temperature-in-denver'
+};
 
 // ---------------------------------------------------------------------------
 //  Utility helpers
@@ -920,21 +944,74 @@ async function loadPositions() {
   var tbody = $('positions-body');
 
   if (!data || !Array.isArray(data) || data.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="7" class="no-data">No open positions</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="12" class="no-data">No open positions</td></tr>';
     return;
   }
 
-  tbody.innerHTML = data.map(function(p) {
+  tbody.innerHTML = data.map(function(p, idx) {
+    // Entry and current in cents
+    var entryCents = p.entry_price != null ? (p.entry_price * 100).toFixed(0) + '¢' : '--';
+    var nowCents = p.current_price != null ? (p.current_price * 100).toFixed(0) + '¢' : '--';
+
+    // Price move with arrow
+    var moveHtml = '--';
+    if (p.price_move != null) {
+      var mc = (Math.abs(p.price_move) * 100).toFixed(1);
+      var mCls = p.price_move >= 0 ? 'move-positive' : 'move-negative';
+      var arrow = p.price_move > 0.001 ? '&#9650;' : (p.price_move < -0.001 ? '&#9660;' : '&#8212;');
+      moveHtml = '<span class="' + mCls + '">' + arrow + ' ' + mc + '¢</span>';
+    }
+
+    // Unrealized PnL
+    var pnlHtml = '--';
+    if (p.unrealized_pnl != null) {
+      var sign = p.unrealized_pnl_pct >= 0 ? '+' : '';
+      pnlHtml = '<span class="pnl-wrap ' + pnlClass(p.unrealized_pnl) + '">'
+        + fmt$(p.unrealized_pnl)
+        + '<small>(' + sign + p.unrealized_pnl_pct + '%)</small></span>';
+    }
+
+    // Edge now
+    var edgeNowHtml = p.current_edge != null ? fmtEdge(p.current_edge) : '--';
+    var edgeNowCls = p.current_edge != null ? edgeColor(p.current_edge) : '';
+
+    // Edge delta
+    var edgeDHtml = '--';
+    if (p.edge_trend === 'improving')  edgeDHtml = '<span class="edge-improving">&#9650; Better</span>';
+    if (p.edge_trend === 'worsening') edgeDHtml = '<span class="edge-worsening">&#9660; Worse</span>';
+    if (p.edge_trend === 'stable')    edgeDHtml = '<span class="edge-stable">&#8212; Flat</span>';
+
+    // Signal badge
+    var sigHtml = '--';
+    if (p.recommendation) {
+      var rec = p.recommendation.toUpperCase();
+      sigHtml = rec.indexOf('SELL') >= 0
+        ? '<span class="badge badge-red">' + esc(rec) + '</span>'
+        : '<span class="badge badge-green">' + esc(rec) + '</span>';
+    }
+
     return '<tr>'
-      + '<td><a href="https://kalshi.com/markets/' + encodeURIComponent(p.market_ticker) + '" target="_blank" class="text-accent">' + esc(p.market_ticker) + '</a></td>'
+      + '<td><a href="' + kalshiUrl(p.market_ticker) + '" target="_blank" class="text-accent">' + esc(p.market_ticker) + '</a></td>'
+      + '<td>' + esc(p.city || '') + '</td>'
       + '<td class="' + sideClass(p.side) + '">' + esc(p.side) + '</td>'
       + '<td>' + (p.contracts != null ? p.contracts : '--') + '</td>'
-      + '<td>' + fmt$(p.price) + '</td>'
-      + '<td>' + fmt$(p.cost) + '</td>'
-      + '<td class="' + edgeColor(p.edge) + '">' + fmtEdge(p.edge) + '</td>'
-      + '<td>' + esc(p.city || '') + '</td>'
+      + '<td>' + entryCents + '</td>'
+      + '<td>' + nowCents + '</td>'
+      + '<td>' + moveHtml + '</td>'
+      + '<td>' + pnlHtml + '</td>'
+      + '<td class="' + edgeNowCls + '">' + edgeNowHtml + '</td>'
+      + '<td>' + edgeDHtml + '</td>'
+      + '<td class="sparkline-cell"><canvas class="sparkline-canvas" id="spark-' + idx + '"></canvas></td>'
+      + '<td>' + sigHtml + '</td>'
       + '</tr>';
   }).join('');
+
+  // Render sparklines after DOM insertion
+  data.forEach(function(p, idx) {
+    if (p.sparkline && p.sparkline.length > 1) {
+      drawSparkline('spark-' + idx, p.sparkline, p.entry_price, p.side);
+    }
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -952,7 +1029,7 @@ async function loadTrades() {
   tbody.innerHTML = data.slice(0, 20).map(function(t) {
     return '<tr>'
       + '<td class="muted">' + relativeTime(t.timestamp) + '</td>'
-      + '<td><a href="https://kalshi.com/markets/' + encodeURIComponent(t.market_ticker) + '" target="_blank" class="text-accent">' + esc(t.market_ticker) + '</a></td>'
+      + '<td><a href="' + kalshiUrl(t.market_ticker) + '" target="_blank" class="text-accent">' + esc(t.market_ticker) + '</a></td>'
       + '<td class="' + sideClass(t.side) + '">' + esc(t.side) + '</td>'
       + '<td>' + (t.contracts != null ? t.contracts : '--') + '</td>'
       + '<td>' + fmt$(t.price) + '</td>'
@@ -977,7 +1054,7 @@ async function loadSignals() {
   tbody.innerHTML = data.map(function(s) {
     var modelProb = s.calibrated_prob || s.blended_prob || s.ensemble_prob;
     return '<tr>'
-      + '<td><a href="https://kalshi.com/markets/' + encodeURIComponent(s.market_ticker) + '" target="_blank" class="text-accent">' + esc(s.market_ticker) + '</a></td>'
+      + '<td><a href="' + kalshiUrl(s.market_ticker) + '" target="_blank" class="text-accent">' + esc(s.market_ticker) + '</a></td>'
       + '<td>' + esc(s.city || '') + '</td>'
       + '<td>' + esc(s.target_date || '') + '</td>'
       + '<td>' + fmtPct(modelProb) + '</td>'
@@ -1053,6 +1130,62 @@ function esc(s) {
   if (!_escEl) _escEl = document.createElement('div');
   _escEl.textContent = String(s);
   return _escEl.innerHTML;
+}
+
+// Map market_ticker → correct Kalshi web URL (series-level page)
+function kalshiUrl(ticker) {
+  if (!ticker) return '#';
+  var series = ticker.split('-')[0];
+  return KALSHI_SERIES_URLS[series] || 'https://kalshi.com/markets/' + ticker.toLowerCase();
+}
+
+// ---------------------------------------------------------------------------
+//  Sparkline renderer (pure Canvas 2D, ~80x24px inline)
+// ---------------------------------------------------------------------------
+function drawSparkline(canvasId, data, entryPrice, side) {
+  var canvas = $(canvasId);
+  if (!canvas) return;
+  var ctx = canvas.getContext('2d');
+  var w = canvas.width = 80;
+  var h = canvas.height = 24;
+
+  // For NO side, invert price data so "up = good" visually
+  // entryPrice is already side-adjusted (NO price for NO positions)
+  var values = side === 'no' ? data.map(function(v) { return 1 - v; }) : data.slice();
+  var entry = entryPrice;
+
+  var min = Math.min.apply(null, values.concat([entry]));
+  var max = Math.max.apply(null, values.concat([entry]));
+  var range = max - min || 0.01;
+
+  function sy(v) { return h - ((v - min) / range) * (h - 2) - 1; }
+  function sx(i) { return (i / (values.length - 1)) * (w - 2) + 1; }
+
+  // Entry price reference line (dashed, dim)
+  ctx.strokeStyle = 'rgba(139,148,158,0.4)';
+  ctx.setLineDash([2, 2]);
+  ctx.beginPath();
+  ctx.moveTo(0, sy(entry));
+  ctx.lineTo(w, sy(entry));
+  ctx.stroke();
+  ctx.setLineDash([]);
+
+  // Price trajectory line
+  var last = values[values.length - 1];
+  ctx.strokeStyle = last >= entry ? '#3fb950' : '#f85149';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  for (var i = 0; i < values.length; i++) {
+    if (i === 0) ctx.moveTo(sx(i), sy(values[i]));
+    else ctx.lineTo(sx(i), sy(values[i]));
+  }
+  ctx.stroke();
+
+  // Current price dot
+  ctx.fillStyle = ctx.strokeStyle;
+  ctx.beginPath();
+  ctx.arc(sx(values.length - 1), sy(last), 2, 0, Math.PI * 2);
+  ctx.fill();
 }
 
 // ---------------------------------------------------------------------------

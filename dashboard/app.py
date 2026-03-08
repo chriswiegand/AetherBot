@@ -308,43 +308,192 @@ def api_status():
 
 @app.route("/api/positions")
 def api_positions():
-    """List all open (filled) positions."""
+    """List all open (filled) positions with mark-to-market data."""
     try:
         conn = get_db()
         cur = conn.cursor()
+
+        # 1a. Main query: trades JOIN kalshi_markets for current prices
         cur.execute(
             """
             SELECT
-                market_ticker,
-                side,
-                contracts,
-                price,
-                total_cost,
-                city,
-                target_date,
-                edge,
-                model_prob
-            FROM trades
-            WHERE status = 'filled'
-            ORDER BY target_date ASC, city ASC
+                t.market_ticker, t.side, t.contracts,
+                t.price AS entry_price, t.total_cost, t.city,
+                t.target_date, t.edge AS edge_at_entry,
+                t.model_prob, t.created_at,
+                km.yes_price AS current_yes_price,
+                km.no_price  AS current_no_price,
+                km.close_time, km.status AS market_status
+            FROM trades t
+            LEFT JOIN kalshi_markets km
+                ON km.market_ticker = t.market_ticker
+            WHERE t.status = 'filled'
+            ORDER BY t.target_date ASC, t.city ASC
             """
         )
         rows = cur.fetchall()
+        if not rows:
+            conn.close()
+            return jsonify([])
+
+        tickers = list({r["market_ticker"] for r in rows})
+        placeholders = ",".join("?" * len(tickers))
+
+        # 1b. Batch-fetch latest signal per open ticker
+        cur.execute(
+            f"""
+            SELECT s.market_ticker, s.calibrated_prob, s.lead_hours
+            FROM signals s
+            INNER JOIN (
+                SELECT market_ticker, MAX(computed_at) AS max_ct
+                FROM signals
+                WHERE market_ticker IN ({placeholders})
+                GROUP BY market_ticker
+            ) latest
+                ON s.market_ticker = latest.market_ticker
+               AND s.computed_at   = latest.max_ct
+            """,
+            tickers,
+        )
+        sig_rows = cur.fetchall()
+        signals_by_ticker = {
+            sr["market_ticker"]: {
+                "calibrated_prob": sr["calibrated_prob"],
+                "lead_hours": sr["lead_hours"],
+            }
+            for sr in sig_rows
+        }
+
+        # 1c. Batch-fetch sparkline price history
+        cur.execute(
+            f"""
+            SELECT market_ticker, yes_price
+            FROM market_price_history
+            WHERE market_ticker IN ({placeholders})
+            ORDER BY market_ticker, captured_at ASC
+            """,
+            tickers,
+        )
+        raw_spark = {}
+        for sr in cur.fetchall():
+            raw_spark.setdefault(sr["market_ticker"], []).append(sr["yes_price"])
+
+        # Downsample to ≤12 points per ticker
+        sparkline_data = {}
+        for tk, vals in raw_spark.items():
+            if len(vals) <= 12:
+                sparkline_data[tk] = vals
+            else:
+                step = len(vals) / 12.0
+                sparkline_data[tk] = [vals[int(i * step)] for i in range(12)]
+
         conn.close()
 
+        # 1d. Compute mark-to-market per position
         positions = []
         for r in rows:
-            positions.append({
-                "market_ticker": r["market_ticker"],
-                "side": r["side"],
-                "contracts": r["contracts"],
-                "price": r["price"],
-                "cost": r["total_cost"],
-                "city": r["city"],
-                "target_date": r["target_date"],
-                "edge": r["edge"],
-                "model_prob": r["model_prob"],
-            })
+            entry_price = r["entry_price"] or 0
+            side = r["side"] or "yes"
+            contracts = r["contracts"] or 0
+            current_yes = r["current_yes_price"]
+            edge_at_entry = r["edge_at_entry"] or 0
+
+            # Defaults when no current market price available
+            current_price = None
+            price_move = None
+            unrealized_pnl = None
+            unrealized_pnl_pct = None
+            current_edge = None
+            edge_trend = None
+            recommendation = None
+
+            if current_yes is not None:
+                # Side-adjusted pricing
+                if side == "yes":
+                    current_price = current_yes
+                    cost = entry_price * contracts
+                    current_value = current_yes * contracts
+                    price_move = current_yes - entry_price
+                else:
+                    current_price = 1.0 - current_yes
+                    cost = (1.0 - entry_price) * contracts
+                    current_value = (1.0 - current_yes) * contracts
+                    price_move = entry_price - current_yes  # YES drop = NO gain
+
+                unrealized_pnl = round(current_value - cost, 2)
+                unrealized_pnl_pct = (
+                    round((current_value - cost) / cost * 100, 1)
+                    if cost > 0
+                    else 0
+                )
+
+                # Current edge from latest signal
+                sig = signals_by_ticker.get(r["market_ticker"])
+                model_prob = sig["calibrated_prob"] if sig else None
+                if model_prob is not None:
+                    if side == "yes":
+                        current_edge = round(model_prob - current_yes, 4)
+                    else:
+                        current_edge = round(
+                            (1.0 - model_prob) - (1.0 - current_yes), 4
+                        )
+
+                    # Edge trend vs entry
+                    if edge_at_entry:
+                        if abs(current_edge) > abs(edge_at_entry) + 0.01:
+                            edge_trend = "improving"
+                        elif abs(current_edge) < abs(edge_at_entry) - 0.01:
+                            edge_trend = "worsening"
+                        else:
+                            edge_trend = "stable"
+
+                    # Simplified recommendation
+                    if side == "yes" and current_yes > model_prob:
+                        recommendation = "SELL"
+                    elif side == "no" and (1.0 - current_yes) > (
+                        1.0 - model_prob
+                    ):
+                        recommendation = "SELL"
+                    elif (
+                        unrealized_pnl < 0
+                        and current_edge is not None
+                        and abs(current_edge) < 0.03
+                    ):
+                        recommendation = "SELL"
+                    else:
+                        recommendation = "HOLD"
+
+                current_price = round(current_price, 4) if current_price else None
+                price_move = round(price_move, 4) if price_move is not None else None
+
+            # Side-adjusted entry price for display consistency
+            display_entry = (
+                round(entry_price, 4)
+                if side == "yes"
+                else round(1.0 - entry_price, 4)
+            )
+
+            positions.append(
+                {
+                    "market_ticker": r["market_ticker"],
+                    "side": side,
+                    "contracts": contracts,
+                    "entry_price": display_entry,
+                    "current_price": current_price,
+                    "cost": round(r["total_cost"] or 0, 2),
+                    "city": r["city"],
+                    "target_date": r["target_date"],
+                    "edge_at_entry": edge_at_entry,
+                    "current_edge": current_edge,
+                    "edge_trend": edge_trend,
+                    "price_move": price_move,
+                    "unrealized_pnl": unrealized_pnl,
+                    "unrealized_pnl_pct": unrealized_pnl_pct,
+                    "recommendation": recommendation,
+                    "model_prob": r["model_prob"],
+                    "sparkline": sparkline_data.get(r["market_ticker"], []),
+                }
+            )
 
         return jsonify(positions)
 
