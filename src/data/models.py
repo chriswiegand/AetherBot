@@ -53,6 +53,44 @@ class ECMWFForecast(Base):
     )
 
 
+class IconEpsForecast(Base):
+    """ICON-EPS ensemble data: one row per (run, city, valid_time, member)."""
+    __tablename__ = "icon_eps_forecasts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    city = Column(Text, nullable=False)
+    station = Column(Text, nullable=False)
+    model_run_time = Column(Text, nullable=False)  # ISO8601 UTC
+    valid_time = Column(Text, nullable=False)        # ISO8601 UTC
+    member = Column(Integer, nullable=False)          # 0-39
+    temperature_f = Column(Float, nullable=False)
+    fetched_at = Column(Text, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("city", "model_run_time", "valid_time", "member"),
+        Index("idx_icon_eps_city_date", "city", "valid_time"),
+    )
+
+
+class GemForecast(Base):
+    """GEM/GEPS ensemble data: one row per (run, city, valid_time, member)."""
+    __tablename__ = "gem_forecasts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    city = Column(Text, nullable=False)
+    station = Column(Text, nullable=False)
+    model_run_time = Column(Text, nullable=False)  # ISO8601 UTC
+    valid_time = Column(Text, nullable=False)        # ISO8601 UTC
+    member = Column(Integer, nullable=False)          # 0-20
+    temperature_f = Column(Float, nullable=False)
+    fetched_at = Column(Text, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("city", "model_run_time", "valid_time", "member"),
+        Index("idx_gem_city_date", "city", "valid_time"),
+    )
+
+
 class HRRRForecast(Base):
     """HRRR deterministic forecasts."""
     __tablename__ = "hrrr_forecasts"
@@ -183,6 +221,8 @@ class Signal(Base):
     # Raw probabilities
     ensemble_prob = Column(Float)
     ecmwf_prob = Column(Float)
+    icon_eps_prob = Column(Float)
+    gem_prob = Column(Float)
     hrrr_prob = Column(Float)
     nws_prob = Column(Float)
     blended_prob = Column(Float)

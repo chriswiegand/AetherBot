@@ -188,9 +188,12 @@
         <table>
           <thead><tr><th>Source</th><th>Model Run</th><th>Forecast High</th><th>Status</th></tr></thead>
           <tbody id="sources-body">
-            <tr><td>GFS Ensemble</td><td class="text-muted">&mdash;</td><td class="text-muted">&mdash;</td><td><span class="badge badge-yellow">Awaiting</span></td></tr>
-            <tr><td>HRRR</td><td class="text-muted">&mdash;</td><td class="text-muted">&mdash;</td><td><span class="badge badge-yellow">Awaiting</span></td></tr>
-            <tr><td>NWS</td><td class="text-muted">&mdash;</td><td class="text-muted">&mdash;</td><td><span class="badge badge-yellow">Awaiting</span></td></tr>
+            <tr><td>GFS Ensemble (31)</td><td class="text-muted">&mdash;</td><td class="text-muted">&mdash;</td><td><span class="badge badge-yellow">Awaiting</span></td></tr>
+            <tr><td>ECMWF IFS (51)</td><td class="text-muted">&mdash;</td><td class="text-muted">&mdash;</td><td><span class="badge badge-yellow">Awaiting</span></td></tr>
+            <tr><td>ICON-EPS (40)</td><td class="text-muted">&mdash;</td><td class="text-muted">&mdash;</td><td><span class="badge badge-yellow">Awaiting</span></td></tr>
+            <tr><td>GEM/GEPS (21)</td><td class="text-muted">&mdash;</td><td class="text-muted">&mdash;</td><td><span class="badge badge-yellow">Awaiting</span></td></tr>
+            <tr><td>HRRR 3km</td><td class="text-muted">&mdash;</td><td class="text-muted">&mdash;</td><td><span class="badge badge-yellow">Awaiting</span></td></tr>
+            <tr><td>NWS Deterministic</td><td class="text-muted">&mdash;</td><td class="text-muted">&mdash;</td><td><span class="badge badge-yellow">Awaiting</span></td></tr>
           </tbody>
         </table>
       </div>
@@ -208,11 +211,11 @@
   <div class="card">
     <div class="formula">
       <span class="label">Ensemble Probability</span>
-      P<sub>ensemble</sub>(above X) = count(member_max &gt; X) / 31
+      P<sub>model</sub>(above X) = count(member_max &gt; X) / N<sub>members</sub>&ensp;&ensp;(computed per ensemble model: GFS=31, ECMWF=51, ICON=40, GEM=21)
     </div>
     <div class="formula">
       <span class="label">Weighted Blend</span>
-      P<sub>blend</sub> = w<sub>ens</sub> &middot; P<sub>ens</sub> + w<sub>hrrr</sub>(lead) &middot; P<sub>hrrr</sub> + w<sub>nws</sub> &middot; P<sub>nws</sub>
+      P<sub>blend</sub> = w<sub>gfs</sub> &middot; P<sub>gfs</sub> + w<sub>ecmwf</sub> &middot; P<sub>ecmwf</sub> + w<sub>icon</sub> &middot; P<sub>icon</sub> + w<sub>gem</sub> &middot; P<sub>gem</sub> + w<sub>hrrr</sub>(lead) &middot; P<sub>hrrr</sub> + w<sub>nws</sub> &middot; P<sub>nws</sub>
     </div>
   </div>
   <div class="charts-grid">
@@ -367,7 +370,7 @@
 
   <!-- ===== Footer ===== -->
   <div class="footer">
-    AetherBot v1.0 &middot; March 2026 &middot; <a href="/">Back to Dashboard</a>
+    AetherBot v1.3 &middot; 4-Model Ensemble (143 members) &middot; March 2026 &middot; <a href="/">Back to Dashboard</a>
   </div>
 
 </div><!-- /container -->
@@ -489,37 +492,45 @@ function renderRawData(data){
   var sb = $('sources-body');
   var rows = '';
 
-  // GFS
-  if(data.ensemble){
-    var e = data.ensemble;
-    rows += '<tr><td>GFS Ensemble</td><td>'+fmtRun(e.model_run_time)+'</td>';
-    rows += '<td class="text-accent">'+e.mean+' &plusmn; '+e.std+' \u00B0F</td>';
-    rows += '<td><span class="badge badge-green">'+e.member_count+' members</span></td></tr>';
-  } else {
-    rows += '<tr><td>GFS Ensemble</td><td class="text-muted">\u2014</td><td class="text-muted">\u2014</td><td><span class="badge badge-red">No data</span></td></tr>';
-  }
+  // Global ensemble models
+  var ensembleModels = [
+    {key:'ensemble', label:'GFS Ensemble (31)', members:31},
+    {key:'ecmwf', label:'ECMWF IFS (51)', members:51},
+    {key:'icon_eps', label:'ICON-EPS (40)', members:40},
+    {key:'gem', label:'GEM/GEPS (21)', members:21},
+  ];
+  ensembleModels.forEach(function(mod){
+    var e = data[mod.key];
+    if(e){
+      rows += '<tr><td>'+mod.label+'</td><td>'+fmtRun(e.model_run_time)+'</td>';
+      rows += '<td class="text-accent">'+e.mean+' &plusmn; '+e.std+' \u00B0F</td>';
+      rows += '<td><span class="badge badge-green">'+(e.member_count||mod.members)+' members</span></td></tr>';
+    } else {
+      rows += '<tr><td>'+mod.label+'</td><td class="text-muted">\u2014</td><td class="text-muted">\u2014</td><td><span class="badge badge-red">No data</span></td></tr>';
+    }
+  });
   // HRRR
   if(data.hrrr){
-    rows += '<tr><td>HRRR</td><td>'+fmtRun(data.hrrr.model_run_time)+'</td>';
+    rows += '<tr><td>HRRR 3km</td><td>'+fmtRun(data.hrrr.model_run_time)+'</td>';
     rows += '<td class="text-accent">'+data.hrrr.daily_max_f+' \u00B0F</td>';
     rows += '<td><span class="badge badge-green">Fresh</span></td></tr>';
   } else {
-    rows += '<tr><td>HRRR</td><td class="text-muted">\u2014</td><td class="text-muted">\u2014</td><td><span class="badge badge-red">No data</span></td></tr>';
+    rows += '<tr><td>HRRR 3km</td><td class="text-muted">\u2014</td><td class="text-muted">\u2014</td><td><span class="badge badge-red">No data</span></td></tr>';
   }
   // NWS
   if(data.nws){
-    rows += '<tr><td>NWS</td><td>'+fmtRun(data.nws.fetched_at)+'</td>';
+    rows += '<tr><td>NWS Deterministic</td><td>'+fmtRun(data.nws.fetched_at)+'</td>';
     rows += '<td class="text-accent">'+data.nws.high_f+' \u00B0F</td>';
     rows += '<td><span class="badge badge-green">Fresh</span></td></tr>';
   } else {
-    rows += '<tr><td>NWS</td><td class="text-muted">\u2014</td><td class="text-muted">\u2014</td><td><span class="badge badge-red">No data</span></td></tr>';
+    rows += '<tr><td>NWS Deterministic</td><td class="text-muted">\u2014</td><td class="text-muted">\u2014</td><td><span class="badge badge-red">No data</span></td></tr>';
   }
   sb.innerHTML = rows;
 
   // Ensemble histogram
   var area = $('ens-chart-area');
   if(!data.ensemble){
-    area.innerHTML = '<div class="no-data-placeholder"><div class="placeholder-icon">&#9728;</div><div class="placeholder-title">GFS Ensemble Not Available</div><div class="placeholder-desc">Ensemble data has not been fetched yet. The pipeline uses HRRR and NWS sources only.</div></div>';
+    area.innerHTML = '<div class="no-data-placeholder"><div class="placeholder-icon">&#9728;</div><div class="placeholder-title">Ensemble Data Not Available</div><div class="placeholder-desc">Ensemble data has not been fetched yet. The pipeline uses HRRR and NWS sources only.</div></div>';
     return;
   }
   area.innerHTML = '<div class="chart-wrap"><canvas id="ens-chart"></canvas></div>';
@@ -629,16 +640,28 @@ function renderPipeline(data){
     noteEl.textContent = 'HRRR/NWS/Blended stages empty — intermediate probabilities not stored when GFS ensemble is unavailable.';
   } else { noteEl.style.display = 'none'; }
 
-  // Weights table
+  // Weights table — dynamically render all available weight sources
   var w = data.weights;
   var lh = data.lead_hours;
   var wb = $('weights-body');
-  wb.innerHTML =
-    '<tr><td>GFS Ensemble</td><td>'+fmtPct(w.gfs_ensemble.base)+'</td><td>'+fmtPct(w.gfs_ensemble.adjusted)+'</td><td class="text-muted">Constant</td></tr>'+
-    '<tr><td>HRRR</td><td>'+fmtPct(w.hrrr.base)+'</td><td class="text-accent">'+fmtPct(w.hrrr.adjusted)+'</td><td class="text-muted">Interpolated @ '+lh.toFixed(0)+'h lead</td></tr>'+
-    '<tr><td>NWS</td><td>'+fmtPct(w.nws.base)+'</td><td>'+fmtPct(w.nws.adjusted)+'</td><td class="text-muted">Constant</td></tr>';
-  $('m-lead').textContent = lh.toFixed(0)+'h';
-  $('m-hrrr-w').textContent = (w.hrrr.adjusted*100).toFixed(1)+'%';
+  var weightRows = [];
+  var weightSources = [
+    {key:'gfs_ensemble', label:'GFS Ensemble', note:'Adaptive'},
+    {key:'ecmwf', label:'ECMWF IFS', note:'Adaptive'},
+    {key:'icon_eps', label:'ICON-EPS', note:'Adaptive'},
+    {key:'gem', label:'GEM/GEPS', note:'Adaptive'},
+    {key:'hrrr', label:'HRRR 3km', note:'Interpolated @ '+(lh != null ? lh.toFixed(0) : '?')+'h lead', highlight:true},
+    {key:'nws', label:'NWS Deterministic', note:'Adaptive'},
+  ];
+  weightSources.forEach(function(src){
+    if(w[src.key]){
+      var adjClass = src.highlight ? 'text-accent' : '';
+      weightRows.push('<tr><td>'+src.label+'</td><td>'+fmtPct(w[src.key].base)+'</td><td class="'+adjClass+'">'+fmtPct(w[src.key].adjusted)+'</td><td class="text-muted">'+src.note+'</td></tr>');
+    }
+  });
+  wb.innerHTML = weightRows.join('');
+  $('m-lead').textContent = (lh != null ? lh.toFixed(0) : '\u2014')+'h';
+  $('m-hrrr-w').textContent = w.hrrr ? (w.hrrr.adjusted*100).toFixed(1)+'%' : '\u2014';
 }
 
 // ---------------------------------------------------------------------------

@@ -40,7 +40,7 @@ python3 dashboard/app.py
 ## Architecture
 
 ```
-Data Sources        GFS Ensemble (31 members) · HRRR 3km · NWS · IEM CLI
+Data Sources        GFS (31) · ECMWF (51) · ICON-EPS (40) · GEM (21) · HRRR 3km · NWS · IEM CLI
       │
       ▼
 Data Pipeline       Fetch → Parse → Store → Filter
@@ -55,7 +55,7 @@ Strategy Layer      Edge Detect → Kelly Size → Risk Manage
 Execution           Paper Trader · Live Trader · Settlement
 ```
 
-The bot runs a 5-minute core cycle: fetch latest forecasts → compute ensemble probabilities → apply HRRR correction → blend models → calibrate via isotonic regression → detect edges → size via fractional Kelly → check risk limits → execute trade.
+The bot runs a 5-minute core cycle: fetch latest forecasts from 4 global ensembles (143 total members) → compute multi-model ensemble probabilities → apply HRRR correction → blend models via lead-time-adaptive weighting → calibrate via isotonic regression → detect edges → size via fractional Kelly → check risk limits → execute trade.
 
 ---
 
@@ -77,7 +77,10 @@ The bot runs a 5-minute core cycle: fetch latest forecasts → compute ensemble 
 
 | Source | Model | Frequency | Purpose |
 |--------|-------|-----------|---------|
-| Open-Meteo Ensemble | GFS 0.25° (31 members) | 60 min | Primary probability estimate |
+| Open-Meteo Ensemble | GFS 0.25° (31 members) | 60 min | Global ensemble probability |
+| Open-Meteo Ensemble | ECMWF IFS (51 members) | 60 min | Global ensemble probability |
+| Open-Meteo Ensemble | ICON-EPS (40 members) | 12h cycle | Global ensemble probability |
+| Open-Meteo Ensemble | GEM/GEPS (21 members) | 12h cycle | Global ensemble probability |
 | Open-Meteo Forecast | HRRR 3km | 30 min | Short-range correction |
 | NWS API | Gridded forecast | 120 min | Human-machine blend |
 | IEM CLI | NWS Climate Reports | Daily 11:15 AM ET | Settlement ground truth |
@@ -88,11 +91,11 @@ All data sources are **free and open** — no subscriptions required.
 
 ## Signal Pipeline
 
-1. **Ensemble Probability** — Count fraction of 31 GFS members exceeding threshold. Each member's max is rounded to integer °F to match NWS CLI convention.
+1. **Ensemble Probability** — Count fraction of 143 ensemble members (across GFS, ECMWF IFS, ICON-EPS, and GEM/GEPS) exceeding threshold. Each member's max is rounded to integer °F to match NWS CLI convention.
 
 2. **HRRR Correction** — Shift ensemble members by lead-time-weighted fraction of HRRR-ensemble disagreement (45% weight at 0h, decaying to 5% at 48h+).
 
-3. **Model Blend** — Weighted average: Ensemble 60%, HRRR 25%, NWS 15%. Deterministic forecasts converted to probabilities via Gaussian error model (σ = 3°F).
+3. **Model Blend** — Global ensembles share a lead-time-adaptive weight curve, split proportionally: GFS 30%, ECMWF 30%, ICON-EPS 22%, GEM 18%. HRRR and NWS deterministic forecasts are blended in separately. Deterministic forecasts converted to probabilities via Gaussian error model (σ = 3°F).
 
 4. **Isotonic Calibration** — Non-parametric monotone mapping from raw to calibrated probabilities using scikit-learn's IsotonicRegression. Walk-forward refit every 50 trades.
 
@@ -154,15 +157,19 @@ AetherBot/
 ├── src/
 │   ├── config/                # Settings & city loaders
 │   ├── data/                  # Models, DB, API clients
-│   │   ├── models.py          # SQLAlchemy ORM (11 tables)
-│   │   ├── ensemble_fetcher.py
+│   │   ├── models.py          # SQLAlchemy ORM (14 tables)
+│   │   ├── ensemble_fetcher.py    # GFS ensemble fetch
+│   │   ├── ecmwf_fetcher.py       # ECMWF IFS ensemble fetch
+│   │   ├── icon_eps_fetcher.py    # ICON-EPS ensemble fetch
+│   │   ├── gem_fetcher.py         # GEM/GEPS ensemble fetch
 │   │   ├── hrrr_fetcher.py
 │   │   ├── nws_client.py
 │   │   ├── iem_client.py
 │   │   └── kalshi_markets.py
-│   ├── strategy/              # Signal processing
+│   ├── signals/               # Signal processing
 │   │   ├── ensemble_calc.py   # Ensemble probability computation
 │   │   ├── model_blender.py   # Multi-model blending
+│   │   ├── adaptive_weights.py # Lead-time-adaptive weight curves
 │   │   ├── calibrator.py      # Isotonic calibration
 │   │   ├── edge_detector.py   # Edge detection & filtering
 │   │   ├── kelly_sizer.py     # Kelly criterion position sizing
@@ -179,10 +186,18 @@ AetherBot/
 │   │   ├── runner.py          # Main entry point
 │   │   └── jobs.py            # Job definitions + active strategy loader
 │   └── monitoring/            # PnL tracking & alerts
+│       ├── model_scorer.py    # Per-model Brier scoring
+│       ├── postmortem.py      # Post-settlement analysis
+│       └── chart_renderer.py  # Matplotlib chart generation
 ├── dashboard/
 │   ├── app.py                 # Flask API (22+ endpoints)
 │   ├── index.html             # Main dashboard
 │   ├── strategy-lab.html      # Strategy Lab page
+│   ├── evolution.html         # Model evolution tracking
+│   ├── scorecard.html         # Model scorecard
+│   ├── convergence.html       # Ensemble convergence view
+│   ├── math.html              # Math/methodology reference
+│   ├── tracker.html           # Live signal tracker
 │   └── whitepaper.html        # Technical overview
 ├── scripts/
 │   ├── backfill_history.py    # Historical data loader
@@ -206,12 +221,16 @@ AetherBot/
 | Table | Purpose | Volume |
 |-------|---------|--------|
 | `ensemble_forecasts` | GFS member daily maxes | ~310/city/run |
+| `ecmwf_forecasts` | ECMWF IFS member daily maxes | ~510/city/run |
+| `icon_eps_forecasts` | ICON-EPS member daily maxes | ~400/city/run |
+| `gem_forecasts` | GEM/GEPS member daily maxes | ~210/city/run |
 | `hrrr_forecasts` | HRRR deterministic max | ~2/city/run |
 | `nws_forecasts` | NWS 7-day high/low | ~7/city/fetch |
 | `observations` | CLI ground truth | 1/city/day |
 | `kalshi_markets` | Active contracts | ~12/city (3x/day) |
 | `trades` | Paper and live trades | Variable |
 | `brier_scores` | Forecast evaluation | 1/settled trade |
+| `model_scores` | Per-model Brier scores | 1/model/settlement |
 | `strategies` | Named strategy configs | User-defined |
 | `backtest_runs` | Backtest results + charts | Per strategy |
 | `optimization_runs` | Grid search results | Per sweep |
@@ -224,10 +243,14 @@ AetherBot/
 |-----|---------|-----------|
 | Market Discovery | Cron | 6 AM, 12 PM, 6 PM ET |
 | GFS Ensemble Fetch | Interval | Every 60 minutes |
+| ECMWF IFS Fetch | Interval | Every 60 minutes |
+| ICON-EPS Fetch | Interval | Every 12 hours |
+| GEM/GEPS Fetch | Interval | Every 12 hours |
 | HRRR Fetch | Interval | Every 30 minutes |
 | NWS Forecast Fetch | Interval | Every 120 minutes |
 | **Scan & Trade** | Interval | **Every 5 minutes** |
 | Settlement Check | Cron | 11:15 AM ET daily |
+| Model Scorecard | Cron | After settlement daily |
 | Daily Report | Cron | 12:00 PM ET daily |
 
 ---
@@ -268,7 +291,12 @@ strategy:
   max_lead_hours: 72
 
 model_weights:
-  gfs_ensemble: 0.60
+  # Global ensembles share w_global, split proportionally:
+  w_global: 0.60               # Total weight for all 4 ensembles
+  gfs_share: 0.30              # GFS share of w_global
+  ecmwf_share: 0.30            # ECMWF IFS share of w_global
+  icon_eps_share: 0.22         # ICON-EPS share of w_global
+  gem_share: 0.18              # GEM/GEPS share of w_global
   hrrr: 0.25
   nws: 0.15
 ```
@@ -279,7 +307,7 @@ model_weights:
 
 | Component | Technology |
 |-----------|-----------|
-| Language | Python 3.11+ (~7,500 LOC) |
+| Language | Python 3.11+ (~9,000+ LOC, 65+ files) |
 | Database | SQLite (WAL mode) |
 | ORM | SQLAlchemy |
 | Scheduler | APScheduler |
@@ -300,6 +328,7 @@ A few non-obvious details that are critical for correct settlement:
 - **KNYC is Central Park, not an airport**: Unlike most stations, New York's settlement station is in Manhattan.
 - **KMDW is Midway, not O'Hare**: Chicago uses the South Side airport station.
 - **GFS ensemble has 31 members** (member00–member30), not 30.
+- **Multi-model ensemble system**: 143 total members across 4 independent global models (GFS 31, ECMWF IFS 51, ICON-EPS 40, GEM/GEPS 21). Model diversity reduces correlated forecast errors.
 
 ---
 
@@ -309,7 +338,7 @@ Private repository. All rights reserved.
 
 ---
 
-*AetherBot v1.0 · March 2026 · Built with Python, weather models, and a healthy respect for atmospheric chaos.*
+*AetherBot v1.3 · March 2026 · Built with Python, weather models, and a healthy respect for atmospheric chaos.*
 
 ---
 ---
@@ -892,7 +921,7 @@ The complete interactive whitepaper with charts is served at `/whitepaper` on th
 
   <!-- Footer -->
   <div class="footer">
-    AetherBot v1.0 &middot; March 2026 &middot; <a href="/" class="back-link">Back to Dashboard</a>
+    AetherBot v1.3 &middot; March 2026 &middot; <a href="/" class="back-link">Back to Dashboard</a>
   </div>
 
 </div>

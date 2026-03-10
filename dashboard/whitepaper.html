@@ -220,7 +220,7 @@
       <div class="arch-diagram">
         <div class="arch-layer">
           <div class="layer-title">Data Sources</div>
-          <div class="layer-desc">GFS Ensemble &middot; HRRR &middot; NWS &middot; IEM CLI</div>
+          <div class="layer-desc">GFS &middot; ECMWF &middot; ICON-EPS &middot; GEM &middot; HRRR &middot; NWS &middot; IEM</div>
         </div>
         <div class="arch-arrow">&#8595;</div>
         <div class="arch-layer">
@@ -273,7 +273,10 @@
         <table>
           <thead><tr><th>Source</th><th>Model</th><th>Frequency</th><th>Purpose</th></tr></thead>
           <tbody>
-            <tr><td>Open-Meteo Ensemble</td><td>GFS 0.25&deg; (31 members)</td><td>Every 60 min</td><td>Primary probability estimate</td></tr>
+            <tr><td>Open-Meteo Ensemble</td><td>GFS 0.25&deg; (31 members)</td><td>Every 60 min</td><td>Global ensemble probability</td></tr>
+            <tr><td>Open-Meteo Ensemble</td><td>ECMWF IFS (51 members)</td><td>Every 60 min</td><td>Global ensemble probability</td></tr>
+            <tr><td>Open-Meteo Ensemble</td><td>ICON-EPS (40 members)</td><td>Every 12h</td><td>Independent physics ensemble</td></tr>
+            <tr><td>Open-Meteo Ensemble</td><td>GEM/GEPS (21 members)</td><td>Every 12h</td><td>Canadian ensemble diversity</td></tr>
             <tr><td>Open-Meteo Forecast</td><td>HRRR 3km</td><td>Every 30 min</td><td>Short-range correction</td></tr>
             <tr><td>NWS API</td><td>Gridded forecast</td><td>Every 120 min</td><td>Human-machine blend</td></tr>
             <tr><td>IEM CLI</td><td>NWS Climate Reports</td><td>Daily 11:15 AM ET</td><td>Settlement (ground truth)</td></tr>
@@ -293,6 +296,9 @@
           <tbody>
             <tr><td>Market Discovery</td><td>Cron</td><td>6 AM, 12 PM, 6 PM ET</td></tr>
             <tr><td>GFS Ensemble Fetch</td><td>Interval</td><td>Every 60 minutes</td></tr>
+            <tr><td>ECMWF Ensemble Fetch</td><td>Interval</td><td>Every 60 minutes</td></tr>
+            <tr><td>ICON-EPS Fetch</td><td>Interval</td><td>Every 12 hours</td></tr>
+            <tr><td>GEM/GEPS Fetch</td><td>Interval</td><td>Every 12 hours</td></tr>
             <tr><td>HRRR Fetch</td><td>Interval</td><td>Every 30 minutes</td></tr>
             <tr><td>NWS Forecast Fetch</td><td>Interval</td><td>Every 120 minutes</td></tr>
             <tr><td class="text-accent">Scan &amp; Trade</td><td>Interval</td><td>Every 5 minutes</td></tr>
@@ -335,9 +341,9 @@
         </div>
       </div>
       <div class="prose">
-        <p><strong>Ensemble Probability:</strong> Count the fraction of 31 GFS members predicting the outcome. For "above X" contracts: P(high &gt; X) = members exceeding X / total members. Each member's max is rounded to integer &deg;F to match NWS CLI convention.</p>
+        <p><strong>Ensemble Probability:</strong> Count the fraction of 143 ensemble members across 4 global models (GFS, ECMWF IFS, ICON-EPS, GEM/GEPS) predicting the outcome. For "above X" contracts: P(high &gt; X) = members exceeding X / total members per model. Each member's max is rounded to integer &deg;F to match NWS CLI convention.</p>
         <p><strong>HRRR Correction:</strong> Shift ensemble members by a lead-time-weighted fraction of the HRRR-ensemble disagreement. HRRR's 3km resolution is most valuable at short lead times (&lt;12h).</p>
-        <p><strong>Model Blend:</strong> Weighted average of ensemble (60%), HRRR (25%), and NWS (15%) probabilities. NWS/HRRR deterministic forecasts are converted to probabilities via Gaussian error model (&sigma; = 3&deg;F).</p>
+        <p><strong>Model Blend:</strong> Four global ensembles (GFS, ECMWF, ICON-EPS, GEM) share a lead-time-adaptive global weight, split proportionally (30/30/22/18). HRRR and NWS provide deterministic correction signals. Deterministic forecasts are converted to probabilities via Gaussian error model (&sigma; = 3&deg;F).</p>
         <p><strong>Isotonic Calibration:</strong> Non-parametric monotone mapping from raw probabilities to calibrated probabilities using scikit-learn's IsotonicRegression, fit on historical forecast-outcome pairs (walk-forward, refit every 50 trades).</p>
       </div>
     </div>
@@ -352,9 +358,12 @@
           <table>
             <thead><tr><th>Source</th><th>Weight</th><th>Role</th></tr></thead>
             <tbody>
-              <tr><td>GFS Ensemble</td><td class="text-green">60%</td><td>Primary (uncertainty quantification)</td></tr>
-              <tr><td>HRRR</td><td class="text-yellow">25%</td><td>Short-range correction</td></tr>
-              <tr><td>NWS</td><td class="text-accent">15%</td><td>Human-machine judgment</td></tr>
+              <tr><td>GFS Ensemble</td><td class="text-green">30% of global</td><td>Primary CONUS ensemble (31 members)</td></tr>
+              <tr><td>ECMWF IFS</td><td class="text-green">30% of global</td><td>Best global skill (51 members)</td></tr>
+              <tr><td>ICON-EPS</td><td class="text-yellow">22% of global</td><td>Independent physics (40 members)</td></tr>
+              <tr><td>GEM/GEPS</td><td class="text-yellow">18% of global</td><td>Canadian diversity (21 members)</td></tr>
+              <tr><td>HRRR</td><td class="text-accent">Lead-time adaptive</td><td>Short-range correction (decays with lead time)</td></tr>
+              <tr><td>NWS</td><td class="text-accent">Remaining</td><td>Human-machine judgment</td></tr>
             </tbody>
           </table>
         </div>
@@ -527,8 +536,8 @@
         <table>
           <thead><tr><th>Component</th><th>Technology</th><th>Notes</th></tr></thead>
           <tbody>
-            <tr><td>Language</td><td>Python 3.11+</td><td>~5,200 LOC across 51 files</td></tr>
-            <tr><td>Database</td><td>SQLite (WAL mode)</td><td>8 tables, concurrent reads</td></tr>
+            <tr><td>Language</td><td>Python 3.11+</td><td>~9,000 LOC across 65+ files</td></tr>
+            <tr><td>Database</td><td>SQLite (WAL mode)</td><td>14 tables, concurrent reads</td></tr>
             <tr><td>ORM</td><td>SQLAlchemy</td><td>Declarative models</td></tr>
             <tr><td>Scheduler</td><td>APScheduler</td><td>Blocking + Interval/Cron triggers</td></tr>
             <tr><td>HTTP Client</td><td>httpx</td><td>Async-capable, sync usage</td></tr>
@@ -551,6 +560,9 @@
           <thead><tr><th>Table</th><th>Purpose</th><th>Volume</th></tr></thead>
           <tbody>
             <tr><td class="text-accent">ensemble_forecasts</td><td>GFS member daily maxes</td><td>~310/city/run</td></tr>
+            <tr><td class="text-accent">ecmwf_forecasts</td><td>ECMWF IFS member daily maxes</td><td>~510/city/run</td></tr>
+            <tr><td class="text-accent">icon_eps_forecasts</td><td>ICON-EPS member daily maxes</td><td>~400/city/run</td></tr>
+            <tr><td class="text-accent">gem_forecasts</td><td>GEM/GEPS member daily maxes</td><td>~210/city/run</td></tr>
             <tr><td class="text-accent">hrrr_forecasts</td><td>HRRR deterministic max</td><td>~2/city/run</td></tr>
             <tr><td class="text-accent">nws_forecasts</td><td>NWS 7-day high/low</td><td>~7/city/fetch</td></tr>
             <tr><td class="text-accent">observations</td><td>CLI ground truth</td><td>1/city/day</td></tr>
@@ -558,6 +570,10 @@
             <tr><td class="text-accent">signals</td><td>Model probs + edges</td><td>1/market/scan</td></tr>
             <tr><td class="text-accent">trades</td><td>Paper and live trades</td><td>Variable</td></tr>
             <tr><td class="text-accent">brier_scores</td><td>Forecast evaluation</td><td>1/settled trade</td></tr>
+            <tr><td class="text-accent">model_scores</td><td>Per-model Brier scores</td><td>1/model/settlement</td></tr>
+            <tr><td class="text-accent">strategies</td><td>Strategy configurations</td><td>Variable</td></tr>
+            <tr><td class="text-accent">backtest_runs</td><td>Backtest result history</td><td>Variable</td></tr>
+            <tr><td class="text-accent">optimization_runs</td><td>Optimization result history</td><td>Variable</td></tr>
           </tbody>
         </table>
       </div>
@@ -566,7 +582,7 @@
 
   <!-- Footer -->
   <div class="footer">
-    AetherBot v1.0 &middot; March 2026 &middot; <a href="/" class="back-link">Back to Dashboard</a>
+    AetherBot v1.3 &middot; March 2026 &middot; <a href="/" class="back-link">Back to Dashboard</a>
   </div>
 
 </div>

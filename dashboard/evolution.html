@@ -114,6 +114,8 @@
   <div class="stat-row" id="stats-row">
     <div class="stat-card"><div class="value orange" id="stat-gfs">&mdash;</div><div class="label">GFS Median</div></div>
     <div class="stat-card"><div class="value pink" id="stat-ecmwf">&mdash;</div><div class="label">ECMWF Median</div></div>
+    <div class="stat-card"><div class="value" id="stat-icon-eps" style="color:#38b2ac">&mdash;</div><div class="label">ICON-EPS Median</div></div>
+    <div class="stat-card"><div class="value" id="stat-gem" style="color:#9ae6b4">&mdash;</div><div class="label">GEM Median</div></div>
     <div class="stat-card"><div class="value" id="stat-hrrr">&mdash;</div><div class="label">HRRR Forecast</div></div>
     <div class="stat-card"><div class="value cyan" id="stat-nws">&mdash;</div><div class="label">NWS Forecast</div></div>
     <div class="stat-card"><div class="value purple" id="stat-market">&mdash;</div><div class="label">Market Implied</div></div>
@@ -205,6 +207,14 @@ function updateStats(data) {
   const ecmwf = data.ecmwf || [];
   const lastEcmwf = ecmwf.length > 0 ? ecmwf[ecmwf.length - 1] : null;
   document.getElementById('stat-ecmwf').textContent = lastEcmwf ? `${lastEcmwf.median}°F` : '—';
+
+  const iconEps = data.icon_eps || [];
+  const lastIconEps = iconEps.length > 0 ? iconEps[iconEps.length - 1] : null;
+  document.getElementById('stat-icon-eps').textContent = lastIconEps ? `${lastIconEps.median}°F` : '—';
+
+  const gem = data.gem || [];
+  const lastGem = gem.length > 0 ? gem[gem.length - 1] : null;
+  document.getElementById('stat-gem').textContent = lastGem ? `${lastGem.median}°F` : '—';
 
   const lastHrrr = data.hrrr.length > 0 ? data.hrrr[data.hrrr.length - 1] : null;
   document.getElementById('stat-hrrr').textContent = lastHrrr ? `${lastHrrr.max_f}°F` : '—';
@@ -341,6 +351,74 @@ function drawTempChart(data) {
       borderWidth: 2,
       pointRadius: 3,
       pointBackgroundColor: '#f778ba',
+      tension: 0.2,
+      order: 3,
+    });
+  }
+
+  // ICON-EPS P10-P90 band
+  if (data.icon_eps && data.icon_eps.length > 0) {
+    datasets.push({
+      label: 'ICON-EPS P90',
+      data: data.icon_eps.map(d => ({ x: utcDate(d.t), y: d.p90 })),
+      borderColor: 'transparent',
+      backgroundColor: 'transparent',
+      pointRadius: 0,
+      fill: false,
+      order: 13,
+    });
+    datasets.push({
+      label: 'ICON-EPS P10',
+      data: data.icon_eps.map(d => ({ x: utcDate(d.t), y: d.p10 })),
+      borderColor: 'transparent',
+      backgroundColor: 'rgba(56, 178, 172, 0.10)',
+      pointRadius: 0,
+      fill: '-1',
+      order: 13,
+    });
+    // ICON-EPS median line
+    datasets.push({
+      label: 'ICON-EPS Median',
+      data: data.icon_eps.map(d => ({ x: utcDate(d.t), y: d.median })),
+      borderColor: '#38b2ac',
+      backgroundColor: 'transparent',
+      borderWidth: 2,
+      pointRadius: 3,
+      pointBackgroundColor: '#38b2ac',
+      tension: 0.2,
+      order: 3,
+    });
+  }
+
+  // GEM/GEPS P10-P90 band
+  if (data.gem && data.gem.length > 0) {
+    datasets.push({
+      label: 'GEM P90',
+      data: data.gem.map(d => ({ x: utcDate(d.t), y: d.p90 })),
+      borderColor: 'transparent',
+      backgroundColor: 'transparent',
+      pointRadius: 0,
+      fill: false,
+      order: 14,
+    });
+    datasets.push({
+      label: 'GEM P10',
+      data: data.gem.map(d => ({ x: utcDate(d.t), y: d.p10 })),
+      borderColor: 'transparent',
+      backgroundColor: 'rgba(154, 230, 180, 0.10)',
+      pointRadius: 0,
+      fill: '-1',
+      order: 14,
+    });
+    // GEM median line
+    datasets.push({
+      label: 'GEM Median',
+      data: data.gem.map(d => ({ x: utcDate(d.t), y: d.median })),
+      borderColor: '#9ae6b4',
+      backgroundColor: 'transparent',
+      borderWidth: 2,
+      pointRadius: 3,
+      pointBackgroundColor: '#9ae6b4',
       tension: 0.2,
       order: 3,
     });
@@ -521,8 +599,10 @@ function drawProbChart(data) {
   }
 
   const models = [
-    { key: 'ensemble', label: 'Ensemble', color: '#db6d28' },
+    { key: 'ensemble', label: 'GFS Ensemble', color: '#db6d28' },
     { key: 'ecmwf', label: 'ECMWF', color: '#f778ba' },
+    { key: 'icon_eps', label: 'ICON-EPS', color: '#38b2ac' },
+    { key: 'gem', label: 'GEM', color: '#9ae6b4' },
     { key: 'hrrr', label: 'HRRR', color: '#58a6ff' },
     { key: 'nws', label: 'NWS', color: '#39d2c0' },
     { key: 'blended', label: 'Blended', color: '#a371f7' },
@@ -600,6 +680,8 @@ function drawWeightsChart(data) {
   const models = [
     { key: 'ensemble', label: 'GFS Ensemble', color: '#db6d28' },
     { key: 'ecmwf', label: 'ECMWF IFS', color: '#f778ba' },
+    { key: 'icon_eps', label: 'ICON-EPS', color: '#38b2ac' },
+    { key: 'gem', label: 'GEM/GEPS', color: '#9ae6b4' },
     { key: 'hrrr', label: 'HRRR', color: '#58a6ff' },
     { key: 'nws', label: 'NWS', color: '#39d2c0' },
   ];

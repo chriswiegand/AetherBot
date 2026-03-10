@@ -1,7 +1,8 @@
-"""Daily email report via Gmail SMTP.
+"""Email reports via Gmail SMTP.
 
-Sends an HTML summary of open positions, recent settlements,
-balance, PnL, model quality stats, and upcoming event timetable.
+1. Daily summary: open positions, settlements, balance, PnL, model stats.
+2. Model arrival alert: triggered when new GFS data arrives, includes
+   inline temperature evolution charts for every active market.
 """
 
 from __future__ import annotations
@@ -10,6 +11,7 @@ import logging
 import smtplib
 from collections import defaultdict
 from datetime import date, timedelta
+from email.mime.image import MIMEImage
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
@@ -131,6 +133,144 @@ def send_daily_email(settings: AppSettings, get_bankroll=None):
         app_password=email_cfg.app_password,
         from_addr=email_cfg.recipient,  # Send from self
     )
+
+
+def send_model_arrival_email(
+    settings: AppSettings,
+    charts: list[dict],
+    gfs_run_time: str,
+):
+    """Send an email with inline evolution charts when new GFS data arrives.
+
+    Args:
+        settings: App settings (for email config).
+        charts: List of {"city": str, "date": str, "png": bytes} from
+                chart_renderer.render_all_active_charts().
+        gfs_run_time: The GFS model run identifier (e.g. "2026-03-10T00:00").
+    """
+    email_cfg = settings.email
+    if not email_cfg.enabled or not email_cfg.app_password:
+        logger.info("Email not configured — skipping model arrival email")
+        return
+
+    if not charts:
+        logger.info("No charts to send — skipping model arrival email")
+        return
+
+    today_str = date.today().isoformat()
+
+    # Group charts by date then city for organized layout
+    by_date: dict[str, list[dict]] = defaultdict(list)
+    for chart in charts:
+        by_date[chart["date"]].append(chart)
+
+    # Build HTML body
+    style = """
+    <style>
+        body { font-family: -apple-system, sans-serif; color: #e2e8f0;
+               background: #1a202c; max-width: 700px; margin: auto; padding: 20px; }
+        h1 { color: #f6ad55; margin-bottom: 4px; }
+        h2 { color: #63b3ed; border-bottom: 1px solid #2d3748; padding-bottom: 4px;
+             margin-top: 24px; }
+        h3 { color: #e2e8f0; margin: 16px 0 8px 0; }
+        .subtitle { color: #a0aec0; font-size: 13px; margin-bottom: 20px; }
+        .chart-container { margin: 8px 0 20px 0; text-align: center; }
+        .chart-container img { max-width: 100%; border-radius: 8px;
+                               border: 1px solid #2d3748; }
+        .footer { margin-top: 30px; padding: 15px; background: #2d3748;
+                  border-radius: 8px; font-size: 12px; color: #a0aec0; }
+        .summary-grid { display: grid; grid-template-columns: 1fr 1fr;
+                        gap: 8px; margin-bottom: 16px; }
+        .summary-item { background: #2d3748; border-radius: 6px; padding: 10px;
+                        text-align: center; }
+        .summary-item .val { font-size: 18px; font-weight: bold; color: #f6ad55; }
+        .summary-item .lbl { font-size: 10px; color: #a0aec0;
+                              text-transform: uppercase; }
+    </style>
+    """
+
+    n_charts = len(charts)
+    n_dates = len(by_date)
+    cities = sorted(set(c["city"] for c in charts))
+
+    html = f"""<html><head>{style}</head><body>
+    <h1>New GFS Data Arrived</h1>
+    <div class="subtitle">
+        GFS Run: <strong>{gfs_run_time}</strong> &nbsp;|&nbsp;
+        Generated: {today_str}
+    </div>
+
+    <div class="summary-grid">
+        <div class="summary-item">
+            <div class="val">{n_charts}</div>
+            <div class="lbl">Charts</div>
+        </div>
+        <div class="summary-item">
+            <div class="val">{n_dates}</div>
+            <div class="lbl">Target Dates</div>
+        </div>
+    </div>
+    """
+
+    # Add chart sections grouped by date
+    chart_cids = []  # (cid_name, png_bytes) pairs for attachment
+    for tdate in sorted(by_date.keys()):
+        date_charts = sorted(by_date[tdate], key=lambda c: c["city"])
+        html += f'<h2>{tdate}</h2>'
+
+        for chart in date_charts:
+            cid_name = f"chart_{chart['city']}_{chart['date']}"
+            chart_cids.append((cid_name, chart["png"]))
+            html += f"""
+            <h3>{chart['city']}</h3>
+            <div class="chart-container">
+                <img src="cid:{cid_name}" alt="{chart['city']} {chart['date']} evolution">
+            </div>
+            """
+
+    html += """
+    <div class="footer">
+        <strong>AetherBot Model Arrival Alert</strong><br>
+        This email was triggered automatically when new GFS ensemble data
+        was detected. Charts show temperature forecast evolution from all
+        model sources (GFS, ECMWF, HRRR, NWS), market-implied distributions,
+        and observations.
+    </div>
+    </body></html>
+    """
+
+    # Build MIME message with inline images
+    msg = MIMEMultipart("related")
+    msg["Subject"] = f"AetherBot: New GFS Data — {gfs_run_time}"
+    msg["From"] = f"AetherBot <{email_cfg.recipient}>"
+    msg["To"] = email_cfg.recipient
+
+    # Attach HTML body
+    msg_alt = MIMEMultipart("alternative")
+    msg_alt.attach(MIMEText(html, "html"))
+    msg.attach(msg_alt)
+
+    # Attach chart PNGs as inline CID images
+    for cid_name, png_bytes in chart_cids:
+        img = MIMEImage(png_bytes, _subtype="png")
+        img.add_header("Content-ID", f"<{cid_name}>")
+        img.add_header("Content-Disposition", "inline", filename=f"{cid_name}.png")
+        msg.attach(img)
+
+    # Send
+    try:
+        with smtplib.SMTP(email_cfg.smtp_host, email_cfg.smtp_port) as server:
+            server.starttls()
+            server.login(email_cfg.recipient, email_cfg.app_password)
+            server.sendmail(email_cfg.recipient, email_cfg.recipient, msg.as_string())
+
+        total_kb = sum(len(p) for _, p in chart_cids) / 1024
+        logger.info(
+            f"Model arrival email sent: {n_charts} charts, "
+            f"{total_kb:.0f} KB total, GFS run={gfs_run_time}"
+        )
+    except Exception as e:
+        logger.error(f"Failed to send model arrival email: {e}")
 
 
 def _query_upcoming_events(session, today: str) -> list[dict]:

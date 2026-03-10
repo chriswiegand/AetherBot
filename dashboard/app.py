@@ -3840,6 +3840,58 @@ def api_evolution_temperature():
                 "n_members": n,
             })
 
+        # 2b. All ICON-EPS ensemble runs for this city+date
+        icon_eps_rows = conn.execute(
+            """SELECT model_run_time, member, temperature_f
+               FROM icon_eps_forecasts
+               WHERE city = ? AND date(valid_time) = ?
+               ORDER BY model_run_time ASC, member ASC""",
+            (city, date_str),
+        ).fetchall()
+
+        icon_eps_runs = defaultdict(list)
+        for run_time, _member, temp_f in icon_eps_rows:
+            icon_eps_runs[run_time].append(temp_f)
+
+        icon_eps_series = []
+        for run_time, temps in sorted(icon_eps_runs.items()):
+            temps.sort()
+            n = len(temps)
+            icon_eps_series.append({
+                "t": run_time,
+                "median": temps[n // 2],
+                "mean": round(sum(temps) / n, 1),
+                "p10": temps[max(0, int(n * 0.10))],
+                "p90": temps[min(n - 1, int(n * 0.90))],
+                "n_members": n,
+            })
+
+        # 2c. All GEM/GEPS ensemble runs for this city+date
+        gem_rows = conn.execute(
+            """SELECT model_run_time, member, temperature_f
+               FROM gem_forecasts
+               WHERE city = ? AND date(valid_time) = ?
+               ORDER BY model_run_time ASC, member ASC""",
+            (city, date_str),
+        ).fetchall()
+
+        gem_runs = defaultdict(list)
+        for run_time, _member, temp_f in gem_rows:
+            gem_runs[run_time].append(temp_f)
+
+        gem_series = []
+        for run_time, temps in sorted(gem_runs.items()):
+            temps.sort()
+            n = len(temps)
+            gem_series.append({
+                "t": run_time,
+                "median": temps[n // 2],
+                "mean": round(sum(temps) / n, 1),
+                "p10": temps[max(0, int(n * 0.10))],
+                "p90": temps[min(n - 1, int(n * 0.90))],
+                "n_members": n,
+            })
+
         # 3. All HRRR runs for this city+date
         hrrr_rows = conn.execute(
             """SELECT model_run_time, temperature_f
@@ -3952,6 +4004,8 @@ def api_evolution_temperature():
         return jsonify({
             "ensemble": ensemble_series,
             "ecmwf": ecmwf_series,
+            "icon_eps": icon_eps_series,
+            "gem": gem_series,
             "hrrr": hrrr_series,
             "nws": nws_series,
             "observations": observations,
@@ -3982,7 +4036,8 @@ def api_evolution_probabilities():
             rows = conn.execute(
                 """SELECT computed_at, ensemble_prob, hrrr_prob, nws_prob,
                           blended_prob, calibrated_prob, market_yes_price,
-                          lead_hours, market_ticker, ecmwf_prob
+                          lead_hours, market_ticker, ecmwf_prob,
+                          icon_eps_prob, gem_prob
                    FROM signals
                    WHERE city = ? AND target_date = ? AND market_ticker = ?
                    ORDER BY computed_at ASC""",
@@ -3992,7 +4047,8 @@ def api_evolution_probabilities():
             rows = conn.execute(
                 """SELECT computed_at, ensemble_prob, hrrr_prob, nws_prob,
                           blended_prob, calibrated_prob, market_yes_price,
-                          lead_hours, market_ticker, ecmwf_prob
+                          lead_hours, market_ticker, ecmwf_prob,
+                          icon_eps_prob, gem_prob
                    FROM signals
                    WHERE city = ? AND target_date = ?
                    ORDER BY computed_at ASC""",
@@ -4006,6 +4062,7 @@ def api_evolution_probabilities():
             "t": r[0], "ensemble": r[1], "hrrr": r[2], "nws": r[3],
             "blended": r[4], "calibrated": r[5], "market": r[6],
             "lead_hours": r[7], "ticker": r[8], "ecmwf": r[9],
+            "icon_eps": r[10], "gem": r[11],
         } for r in rows]
 
         conn.close()

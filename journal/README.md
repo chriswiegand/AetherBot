@@ -12,7 +12,7 @@ Built by Chris with Claude Code (Opus 4) as AI pair-programming partner.
 |-----------|-----------|
 | Language | Python 3.11+ |
 | Database | SQLite with WAL mode |
-| Weather APIs | Open-Meteo (GFS ensemble, HRRR), NWS, IEM |
+| Weather APIs | Open-Meteo (GFS, ECMWF IFS, ICON-EPS, GEM ensembles, HRRR), NWS, IEM |
 | Market API | Kalshi (demo for paper trading) |
 | Dashboard | Flask + vanilla JS + Chart.js |
 | Scheduling | APScheduler |
@@ -22,6 +22,8 @@ Built by Chris with Claude Code (Opus 4) as AI pair-programming partner.
 | Date | Summary |
 |------|---------|
 | [2026-03-06](2026-03-06.md) | Strategy Lab: proportional Kelly sizing, dashboard reset, strategy CRUD, backtest engine, parameter optimizer, Strategy Lab UI with 6 chart types |
+| [2026-03-09](2026-03-09.md) | Multi-Model Ensemble Expansion: ECMWF IFS (51), ICON-EPS (40), GEM/GEPS (21) integration, 4-way blending, adaptive weights, evolution dashboard, model scorecard |
+| [2026-03-10](2026-03-10.md) | Validation Phase: 2-year IEM CLI backfill (3,650 obs), 2-year backtest — Sharpe 1.78, all 5 cities profitable, +$1,698 PnL on $10K |
 
 ## Phase Retrospectives
 

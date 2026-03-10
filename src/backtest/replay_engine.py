@@ -80,11 +80,12 @@ class BacktestEngine:
     # Forecast uncertainty (std dev in °F) — represents realistic GFS-like error
     FORECAST_NOISE_STD = 5.0
 
-    def __init__(self, settings: AppSettings | None = None):
+    def __init__(self, settings: AppSettings | None = None, seed: int = 42):
         if settings is None:
             settings = load_settings()
         self.settings = settings
         self.market_builder = SyntheticMarketBuilder()
+        self._rng = random.Random(seed)
 
     def _preload_observations(
         self, session, city_name: str
@@ -257,8 +258,8 @@ class BacktestEngine:
             # No recent data — fall back to pure climatology
             forecast_mean = clim_mean
 
-        # Add realistic forecast noise
-        forecast_temp = forecast_mean + random.gauss(0, self.FORECAST_NOISE_STD)
+        # Add realistic forecast noise (seeded RNG for reproducibility)
+        forecast_temp = forecast_mean + self._rng.gauss(0, self.FORECAST_NOISE_STD)
 
         # Forecast uncertainty for probability estimation
         # Use a blend of forecast noise + climatological variability

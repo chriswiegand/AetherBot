@@ -16,12 +16,15 @@ from src.config.settings import AppSettings, load_settings
 from src.data.db import init_db, get_session
 from src.data.ensemble_fetcher import EnsembleFetcher, EnsembleResult
 from src.data.ecmwf_fetcher import ECMWFFetcher
+from src.data.icon_eps_fetcher import IconEpsFetcher
+from src.data.gem_fetcher import GemFetcher
 from src.data.hrrr_fetcher import HRRRFetcher
 from src.data.nws_client import NWSClient
 from src.data.kalshi_client import KalshiClient
 from src.data.kalshi_markets import KalshiMarketDiscovery, ParsedMarket
 from src.data.models import (
     Signal, KalshiMarket, EnsembleForecast, ECMWFForecast,
+    IconEpsForecast, GemForecast,
     HRRRForecast, NWSForecast, MarketPriceHistory,
 )
 from src.data.freshness import DataFreshnessTracker
@@ -53,6 +56,8 @@ class BotContext:
         # Data clients
         self.ensemble_fetcher = EnsembleFetcher(settings)
         self.ecmwf_fetcher = ECMWFFetcher(settings)
+        self.icon_eps_fetcher = IconEpsFetcher(settings)
+        self.gem_fetcher = GemFetcher(settings)
         self.hrrr_fetcher = HRRRFetcher(settings)
         self.nws_client = NWSClient(settings)
         self.kalshi_client = KalshiClient(settings)
@@ -97,11 +102,14 @@ class BotContext:
 
         # State
         self._active_markets: list[ParsedMarket] = []
+        self._last_model_email_gfs_run: str | None = None
 
     def shutdown(self):
         """Clean up resources."""
         self.ensemble_fetcher.close()
         self.ecmwf_fetcher.close()
+        self.icon_eps_fetcher.close()
+        self.gem_fetcher.close()
         self.hrrr_fetcher.close()
         self.nws_client.close()
         self.kalshi_client.close()
@@ -128,6 +136,24 @@ def fetch_all_ecmwf(ctx: BotContext):
             ctx.ecmwf_fetcher.fetch_and_store(city_config)
         except Exception as e:
             logger.error(f"ECMWF fetch failed for {city_name}: {e}")
+
+
+def fetch_all_icon_eps(ctx: BotContext):
+    """Fetch ICON-EPS ensemble data for all cities."""
+    for city_name, city_config in ctx.cities.items():
+        try:
+            ctx.icon_eps_fetcher.fetch_and_store(city_config)
+        except Exception as e:
+            logger.error(f"ICON-EPS fetch failed for {city_name}: {e}")
+
+
+def fetch_all_gem(ctx: BotContext):
+    """Fetch GEM/GEPS ensemble data for all cities."""
+    for city_name, city_config in ctx.cities.items():
+        try:
+            ctx.gem_fetcher.fetch_and_store(city_config)
+        except Exception as e:
+            logger.error(f"GEM fetch failed for {city_name}: {e}")
 
 
 def fetch_all_hrrr(ctx: BotContext):
@@ -159,7 +185,7 @@ def _check_manual_refresh_signals(ctx: BotContext) -> set[str]:
     """
     signal_dir = Path(ctx.settings.database.absolute_path).parent / "signals"
     triggered: set[str] = set()
-    for source in ["gfs", "hrrr", "nws", "ecmwf"]:
+    for source in ["gfs", "hrrr", "nws", "ecmwf", "icon_eps", "gem"]:
         signal_file = signal_dir / f"refresh_{source}.signal"
         if signal_file.exists():
             try:
@@ -183,10 +209,27 @@ def smart_data_fetch(ctx: BotContext):
     # If smart fetch is disabled, unconditionally fetch everything
     if not ctx.settings.scheduler.smart_fetch_enabled:
         logger.info("Smart fetch disabled — fetching all sources unconditionally")
+
+        # Record pre-fetch GFS run for email dedup
+        tracker = DataFreshnessTracker(
+            ctx.settings.database.absolute_path,
+            gfs_lag_hours=ctx.settings.scheduler.gfs_availability_lag_hours,
+            hrrr_lag_hours=ctx.settings.scheduler.hrrr_availability_lag_hours,
+        )
+        pre_gfs_run = tracker._get_latest_model_run("ensemble_forecasts")
+
         fetch_all_ensembles(ctx)
         fetch_all_ecmwf(ctx)
+        fetch_all_icon_eps(ctx)
+        fetch_all_gem(ctx)
         fetch_all_hrrr(ctx)
         fetch_all_nws(ctx)
+
+        # Check if GFS run changed → trigger email
+        post_gfs_run = tracker._get_latest_model_run("ensemble_forecasts")
+        if post_gfs_run and post_gfs_run != pre_gfs_run:
+            _maybe_send_model_email(ctx, tracker)
+
         return
 
     tracker = DataFreshnessTracker(
@@ -196,6 +239,7 @@ def smart_data_fetch(ctx: BotContext):
     )
 
     new_data = False  # Track whether any source got fresh data
+    gfs_arrived = False  # Track GFS-specific arrival for email trigger
 
     # GFS Ensemble
     if "gfs" in manual or tracker.should_fetch_gfs():
@@ -203,6 +247,7 @@ def smart_data_fetch(ctx: BotContext):
         logger.info(f"Fetching GFS ensemble ({reason})")
         fetch_all_ensembles(ctx)
         new_data = True
+        gfs_arrived = True
     else:
         logger.debug("GFS ensemble data is fresh — skipping fetch")
 
@@ -214,6 +259,24 @@ def smart_data_fetch(ctx: BotContext):
         new_data = True
     else:
         logger.debug("ECMWF IFS data is fresh — skipping fetch")
+
+    # ICON-EPS Ensemble
+    if "icon_eps" in manual or tracker.should_fetch_icon_eps():
+        reason = "manual refresh" if "icon_eps" in manual else "new ICON-EPS run available"
+        logger.info(f"Fetching ICON-EPS ({reason})")
+        fetch_all_icon_eps(ctx)
+        new_data = True
+    else:
+        logger.debug("ICON-EPS data is fresh — skipping fetch")
+
+    # GEM/GEPS Ensemble
+    if "gem" in manual or tracker.should_fetch_gem():
+        reason = "manual refresh" if "gem" in manual else "new GEM run available"
+        logger.info(f"Fetching GEM/GEPS ({reason})")
+        fetch_all_gem(ctx)
+        new_data = True
+    else:
+        logger.debug("GEM data is fresh — skipping fetch")
 
     # HRRR
     if "hrrr" in manual or tracker.should_fetch_hrrr():
@@ -239,6 +302,64 @@ def smart_data_fetch(ctx: BotContext):
             scan_and_trade(ctx)
         except Exception as e:
             logger.error(f"Fast-path scan_and_trade failed: {e}")
+
+    # --- Model arrival email: send charts when new GFS data arrives ---
+    if gfs_arrived:
+        _maybe_send_model_email(ctx, tracker)
+
+
+# ---------------------------------------------------------------------------
+# Model arrival email (background thread)
+# ---------------------------------------------------------------------------
+
+def _maybe_send_model_email(ctx: BotContext, tracker: DataFreshnessTracker):
+    """Send evolution chart email when new GFS data arrives (deduped).
+
+    Uses the latest GFS model_run_time as a dedup key to prevent
+    duplicate emails on scheduler restarts or re-polls.
+    Runs chart rendering + email in a background thread to avoid
+    blocking the scheduler.
+    """
+    import threading
+
+    if not ctx.settings.email.enabled:
+        return
+
+    # Get current GFS run ID for dedup
+    current_run = tracker._get_latest_model_run("ensemble_forecasts")
+    if not current_run:
+        return
+
+    if ctx._last_model_email_gfs_run == current_run:
+        logger.debug(f"Model email already sent for GFS run {current_run} — skipping")
+        return
+
+    # Mark as sent BEFORE spawning thread to prevent races on fast re-polls
+    ctx._last_model_email_gfs_run = current_run
+
+    def _render_and_send():
+        try:
+            from src.monitoring.chart_renderer import render_all_active_charts
+            from src.monitoring.email_reporter import send_model_arrival_email
+
+            logger.info(f"Rendering evolution charts for GFS run {current_run}...")
+            charts = render_all_active_charts()
+
+            if not charts:
+                logger.info("No active charts to email — skipping model arrival email")
+                return
+
+            send_model_arrival_email(ctx.settings, charts, current_run)
+        except Exception as e:
+            logger.error(f"Model arrival email failed: {e}", exc_info=True)
+
+    thread = threading.Thread(
+        target=_render_and_send,
+        name="model-arrival-email",
+        daemon=True,
+    )
+    thread.start()
+    logger.info(f"Model arrival email thread spawned for GFS run {current_run}")
 
 
 # ---------------------------------------------------------------------------
@@ -470,6 +591,100 @@ def _load_ecmwf_from_db(city_name: str, target_date: str) -> list[float] | None:
         session.close()
 
 
+def _load_icon_eps_from_db(city_name: str, target_date: str) -> list[float] | None:
+    """Load the latest ICON-EPS ensemble member daily maxes from the DB.
+
+    Returns list of 40 member maxes, or None if insufficient data.
+    """
+    session = get_session()
+    try:
+        from sqlalchemy import func
+        latest_run = (
+            session.query(func.max(IconEpsForecast.model_run_time))
+            .filter(IconEpsForecast.city == city_name)
+            .scalar()
+        )
+        if not latest_run:
+            return None
+
+        rows = (
+            session.query(IconEpsForecast)
+            .filter(
+                IconEpsForecast.city == city_name,
+                IconEpsForecast.model_run_time == latest_run,
+                IconEpsForecast.valid_time == target_date,
+            )
+            .order_by(IconEpsForecast.member)
+            .all()
+        )
+
+        if not rows:
+            return None
+
+        member_maxes = [float("nan")] * 40
+        for row in rows:
+            if 0 <= row.member < 40:
+                member_maxes[row.member] = row.temperature_f
+
+        valid_count = sum(1 for t in member_maxes if t == t)
+        if valid_count < 20:
+            return None
+
+        return member_maxes
+    except Exception as e:
+        logger.debug(f"Failed to load ICON-EPS from DB for {city_name}/{target_date}: {e}")
+        return None
+    finally:
+        session.close()
+
+
+def _load_gem_from_db(city_name: str, target_date: str) -> list[float] | None:
+    """Load the latest GEM/GEPS ensemble member daily maxes from the DB.
+
+    Returns list of 21 member maxes, or None if insufficient data.
+    """
+    session = get_session()
+    try:
+        from sqlalchemy import func
+        latest_run = (
+            session.query(func.max(GemForecast.model_run_time))
+            .filter(GemForecast.city == city_name)
+            .scalar()
+        )
+        if not latest_run:
+            return None
+
+        rows = (
+            session.query(GemForecast)
+            .filter(
+                GemForecast.city == city_name,
+                GemForecast.model_run_time == latest_run,
+                GemForecast.valid_time == target_date,
+            )
+            .order_by(GemForecast.member)
+            .all()
+        )
+
+        if not rows:
+            return None
+
+        member_maxes = [float("nan")] * 21
+        for row in rows:
+            if 0 <= row.member < 21:
+                member_maxes[row.member] = row.temperature_f
+
+        valid_count = sum(1 for t in member_maxes if t == t)
+        if valid_count < 10:
+            return None
+
+        return member_maxes
+    except Exception as e:
+        logger.debug(f"Failed to load GEM from DB for {city_name}/{target_date}: {e}")
+        return None
+    finally:
+        session.close()
+
+
 def _load_hrrr_daily_max(city_name: str, target_date: str) -> tuple[float | None, str | None]:
     """Load the latest HRRR daily max forecast for a city+date from the DB.
 
@@ -634,6 +849,8 @@ def _store_all_signals(
                 computed_at=now,
                 ensemble_prob=prob_result.probability,
                 ecmwf_prob=extra.get("ecmwf_prob"),
+                icon_eps_prob=extra.get("icon_eps_prob"),
+                gem_prob=extra.get("gem_prob"),
                 hrrr_prob=extra.get("hrrr_prob"),
                 nws_prob=extra.get("nws_prob"),
                 blended_prob=extra.get("blended_prob"),
@@ -737,6 +954,30 @@ def _run_trading_cycle(
                 f"{sum(1 for t in ecmwf_maxes if t == t)} valid members"
             )
 
+        # --- Load ICON-EPS ensemble from DB ---
+        icon_eps_maxes = _load_icon_eps_from_db(city_name, target_date)
+        icon_eps_probs = {}
+        if icon_eps_maxes is not None:
+            icon_eps_probs = ctx.ensemble_calc.get_full_distribution(
+                icon_eps_maxes, city_markets
+            )
+            logger.debug(
+                f"[{tag}] ICON-EPS loaded for {city_name}/{target_date}: "
+                f"{sum(1 for t in icon_eps_maxes if t == t)} valid members"
+            )
+
+        # --- Load GEM/GEPS ensemble from DB ---
+        gem_maxes = _load_gem_from_db(city_name, target_date)
+        gem_probs = {}
+        if gem_maxes is not None:
+            gem_probs = ctx.ensemble_calc.get_full_distribution(
+                gem_maxes, city_markets
+            )
+            logger.debug(
+                f"[{tag}] GEM loaded for {city_name}/{target_date}: "
+                f"{sum(1 for t in gem_maxes if t == t)} valid members"
+            )
+
         # --- Load NWS high forecast ---
         nws_high = _load_nws_high(city_name, target_date)
 
@@ -757,6 +998,18 @@ def _run_trading_cycle(
             ecmwf_result = ecmwf_probs.get(m.market_ticker)
             if ecmwf_result is not None:
                 ecmwf_prob = ecmwf_result.probability
+
+            # --- Compute ICON-EPS probability ---
+            icon_eps_prob = None
+            icon_eps_result = icon_eps_probs.get(m.market_ticker)
+            if icon_eps_result is not None:
+                icon_eps_prob = icon_eps_result.probability
+
+            # --- Compute GEM probability ---
+            gem_prob = None
+            gem_result = gem_probs.get(m.market_ticker)
+            if gem_result is not None:
+                gem_prob = gem_result.probability
 
             # --- Compute HRRR probability ---
             hrrr_prob = None
@@ -782,10 +1035,12 @@ def _run_trading_cycle(
                         nws_high, m.bracket_low, m.bracket_high, historical_std=4.0,
                     )
 
-            # --- Blend all sources (now including ECMWF) ---
+            # --- Blend all sources (GFS + ECMWF + ICON-EPS + GEM + HRRR + NWS) ---
             blended = ctx.model_blender.blend(
                 ensemble_prob, hrrr_prob, nws_prob, lead_hours,
                 ecmwf_prob=ecmwf_prob,
+                icon_eps_prob=icon_eps_prob,
+                gem_prob=gem_prob,
             )
 
             # Calibrate the BLENDED probability (not raw ensemble)
@@ -801,6 +1056,8 @@ def _run_trading_cycle(
                 "hrrr_prob": hrrr_prob,
                 "nws_prob": nws_prob,
                 "ecmwf_prob": ecmwf_prob,
+                "icon_eps_prob": icon_eps_prob,
+                "gem_prob": gem_prob,
                 "blended_prob": blended,
             }
 

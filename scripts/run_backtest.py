@@ -42,6 +42,7 @@ def main():
     parser.add_argument("--edge-threshold", type=float, default=None, help="Override edge threshold")
     parser.add_argument("--kelly-fraction", type=float, default=None, help="Override Kelly fraction")
     parser.add_argument("--bankroll", type=float, default=None, help="Starting bankroll (default: from settings)")
+    parser.add_argument("--seed", type=int, default=42, help="Random seed for reproducibility (default: 42)")
     args = parser.parse_args()
 
     settings = load_settings()
@@ -84,7 +85,7 @@ def main():
     logger.info(f"Starting bankroll: ${bankroll:.2f}")
 
     # Run backtest
-    engine = BacktestEngine(settings)
+    engine = BacktestEngine(settings, seed=args.seed)
     results = engine.run(
         start_date.isoformat(),
         end_date.isoformat(),
@@ -114,6 +115,29 @@ def main():
         logger.info(f"Brier score:     {results.brier.brier_score:.4f}")
         logger.info(f"  Reliability:   {results.brier.reliability:.4f}")
         logger.info(f"  Resolution:    {results.brier.resolution:.4f}")
+
+    # Per-city breakdown
+    city_trades: dict[str, list] = {}
+    for t in results.trades:
+        city_trades.setdefault(t.city, []).append(t)
+
+    if len(city_trades) > 1:
+        logger.info("\n--- Per-City Breakdown ---")
+        for city_name in sorted(city_trades):
+            ct = city_trades[city_name]
+            wins = sum(1 for t in ct if t.pnl > 0)
+            pnl = sum(t.pnl for t in ct)
+            wr = wins / len(ct) if ct else 0
+            # City Brier
+            city_forecasts = [t.model_prob for t in ct]
+            city_outcomes = [1 if t.settled_yes else 0 for t in ct]
+            from src.signals.calibration import ForecastCalibrator
+            city_brier = ForecastCalibrator.compute_brier_score(city_forecasts, city_outcomes)
+            logger.info(
+                f"  {city_name:10s}: {len(ct):4d} trades, "
+                f"WR {wr:.1%}, PnL ${pnl:+.2f}, Brier {city_brier:.4f}"
+            )
+
     logger.info("=" * 60)
 
 

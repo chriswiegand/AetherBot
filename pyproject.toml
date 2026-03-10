@@ -17,6 +17,7 @@ dependencies = [
     "cryptography>=42.0",
     "rich>=13.0",
     "python-dotenv>=1.0",
+    "matplotlib>=3.8",
 ]
 
 [project.optional-dependencies]

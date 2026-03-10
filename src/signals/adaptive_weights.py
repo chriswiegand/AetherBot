@@ -30,7 +30,7 @@ WEIGHT_PATH = PROJECT_ROOT / "data" / "adaptive_weights.json"
 MIN_SCORED_MARKETS = 10      # Per-model minimum before adapting
 ROLLING_WINDOW_DAYS = 60     # Look-back window for Brier computation
 SMOOTHING_ALPHA = 0.3        # 30% adaptive + 70% fixed curves
-MODEL_SOURCES = ("ensemble", "ecmwf", "hrrr", "nws")
+MODEL_SOURCES = ("ensemble", "ecmwf", "icon_eps", "gem", "hrrr", "nws")
 
 
 class AdaptiveWeightManager:

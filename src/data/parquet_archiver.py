@@ -235,7 +235,7 @@ def archive_convergence_trajectory(
         signals = (
             session.query(Signal)
             .filter_by(city=city, target_date=target_date)
-            .order_by(Signal.fetched_at)
+            .order_by(Signal.computed_at)
             .all()
         )
 
@@ -249,15 +249,18 @@ def archive_convergence_trajectory(
                 "city": s.city,
                 "target_date": s.target_date,
                 "market_ticker": s.market_ticker,
-                "fetched_at": s.fetched_at,
+                "computed_at": s.computed_at,
                 "lead_hours": float(s.lead_hours) if s.lead_hours else None,
                 "ensemble_prob": float(s.ensemble_prob) if s.ensemble_prob else None,
+                "ecmwf_prob": float(s.ecmwf_prob) if s.ecmwf_prob else None,
+                "icon_eps_prob": float(s.icon_eps_prob) if s.icon_eps_prob else None,
+                "gem_prob": float(s.gem_prob) if s.gem_prob else None,
                 "hrrr_prob": float(s.hrrr_prob) if s.hrrr_prob else None,
                 "nws_prob": float(s.nws_prob) if s.nws_prob else None,
                 "blended_prob": float(s.blended_prob) if s.blended_prob else None,
                 "calibrated_prob": float(s.calibrated_prob) if s.calibrated_prob else None,
                 "market_yes_price": float(s.market_yes_price) if s.market_yes_price else None,
-                "edge": float(s.edge) if s.edge else None,
+                "edge": float(s.raw_edge) if s.raw_edge else None,
                 "observed_high_f": float(observed_high),
             }
             rows.append(row)

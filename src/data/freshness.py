@@ -26,6 +26,8 @@ GFS_RUN_HOURS = [0, 6, 12, 18]
 THRESHOLDS = {
     "gfs_ensemble": {"green": 420, "yellow": 780},   # 7h / 13h
     "ecmwf":        {"green": 480, "yellow": 840},   # 8h / 14h (slightly laggier than GFS)
+    "icon_eps":     {"green": 480, "yellow": 840},   # 8h / 14h (12h cycle)
+    "gem":          {"green": 480, "yellow": 840},   # 8h / 14h (12h cycle)
     "hrrr":         {"green": 120, "yellow": 240},    # 2h / 4h
     "nws":          {"green": 360, "yellow": 720},    # 6h / 12h
 }
@@ -47,11 +49,14 @@ class DataFreshnessTracker:
     """Checks data freshness and decides whether to fetch new data."""
 
     def __init__(self, db_path: Path, gfs_lag_hours: float = 4.5, hrrr_lag_hours: float = 1.0,
-                 ecmwf_lag_hours: float = 6.0):
+                 ecmwf_lag_hours: float = 6.0, icon_lag_hours: float = 6.0,
+                 gem_lag_hours: float = 6.0):
         self.db_path = db_path
         self.gfs_lag_hours = gfs_lag_hours
         self.hrrr_lag_hours = hrrr_lag_hours
         self.ecmwf_lag_hours = ecmwf_lag_hours
+        self.icon_lag_hours = icon_lag_hours
+        self.gem_lag_hours = gem_lag_hours
 
     def _get_conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path))
@@ -241,6 +246,108 @@ class DataFreshnessTracker:
 
         return False
 
+    # ------------------------------------------------------------------
+    # ICON-EPS schedule awareness (12h cycle: 00Z, 12Z)
+    # ------------------------------------------------------------------
+
+    ICON_RUN_HOURS = [0, 12]
+
+    def _latest_expected_icon_run(self) -> datetime:
+        """Compute the latest ICON-EPS run whose data should be available now.
+
+        ICON runs at 00Z and 12Z. Data available ~icon_lag_hours after.
+        """
+        now = datetime.now(timezone.utc)
+        available_cutoff = now - timedelta(hours=self.icon_lag_hours)
+        for day_offset in [0, -1]:
+            check_day = now.date() + timedelta(days=day_offset)
+            for run_hour in reversed(self.ICON_RUN_HOURS):
+                run_time = datetime(
+                    check_day.year, check_day.month, check_day.day,
+                    run_hour, 0, 0, tzinfo=timezone.utc
+                )
+                if run_time <= available_cutoff:
+                    return run_time
+        yesterday = now.date() - timedelta(days=1)
+        return datetime(yesterday.year, yesterday.month, yesterday.day, 0, 0, 0, tzinfo=timezone.utc)
+
+    def should_fetch_icon_eps(self) -> bool:
+        """True if a newer ICON-EPS run should be available than what's in the DB."""
+        latest_in_db = self._get_latest_model_run("icon_eps_forecasts")
+        expected = self._latest_expected_icon_run()
+
+        if not latest_in_db:
+            logger.info("No ICON-EPS data in DB — should fetch")
+            return True
+
+        try:
+            ts = latest_in_db.replace(" ", "T")
+            if not ts.endswith("Z") and "+" not in ts and "-" not in ts[10:]:
+                ts += "Z"
+            db_time = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        except Exception:
+            return True
+
+        if expected > db_time:
+            logger.info(
+                f"Newer ICON-EPS run available: expected={expected.isoformat()}, "
+                f"db_latest={latest_in_db}"
+            )
+            return True
+
+        return False
+
+    # ------------------------------------------------------------------
+    # GEM schedule awareness (12h cycle: 00Z, 12Z)
+    # ------------------------------------------------------------------
+
+    GEM_RUN_HOURS = [0, 12]
+
+    def _latest_expected_gem_run(self) -> datetime:
+        """Compute the latest GEM run whose data should be available now.
+
+        GEM runs at 00Z and 12Z. Data available ~gem_lag_hours after.
+        """
+        now = datetime.now(timezone.utc)
+        available_cutoff = now - timedelta(hours=self.gem_lag_hours)
+        for day_offset in [0, -1]:
+            check_day = now.date() + timedelta(days=day_offset)
+            for run_hour in reversed(self.GEM_RUN_HOURS):
+                run_time = datetime(
+                    check_day.year, check_day.month, check_day.day,
+                    run_hour, 0, 0, tzinfo=timezone.utc
+                )
+                if run_time <= available_cutoff:
+                    return run_time
+        yesterday = now.date() - timedelta(days=1)
+        return datetime(yesterday.year, yesterday.month, yesterday.day, 0, 0, 0, tzinfo=timezone.utc)
+
+    def should_fetch_gem(self) -> bool:
+        """True if a newer GEM run should be available than what's in the DB."""
+        latest_in_db = self._get_latest_model_run("gem_forecasts")
+        expected = self._latest_expected_gem_run()
+
+        if not latest_in_db:
+            logger.info("No GEM data in DB — should fetch")
+            return True
+
+        try:
+            ts = latest_in_db.replace(" ", "T")
+            if not ts.endswith("Z") and "+" not in ts and "-" not in ts[10:]:
+                ts += "Z"
+            db_time = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        except Exception:
+            return True
+
+        if expected > db_time:
+            logger.info(
+                f"Newer GEM run available: expected={expected.isoformat()}, "
+                f"db_latest={latest_in_db}"
+            )
+            return True
+
+        return False
+
     def should_fetch_hrrr(self) -> bool:
         """True if a newer HRRR run should be available than what's in the DB."""
         latest_in_db = self._get_latest_model_run("hrrr_forecasts")
@@ -292,6 +399,16 @@ class DataFreshnessTracker:
             latest_fetch = self._get_latest_fetch("ecmwf_forecasts")
             staleness = self._compute_staleness(latest_run)
             next_exp = None  # Similar to GFS schedule
+        elif source == "icon_eps":
+            latest_run = self._get_latest_model_run("icon_eps_forecasts")
+            latest_fetch = self._get_latest_fetch("icon_eps_forecasts")
+            staleness = self._compute_staleness(latest_run)
+            next_exp = None
+        elif source == "gem":
+            latest_run = self._get_latest_model_run("gem_forecasts")
+            latest_fetch = self._get_latest_fetch("gem_forecasts")
+            staleness = self._compute_staleness(latest_run)
+            next_exp = None
         elif source == "hrrr":
             latest_run = self._get_latest_model_run("hrrr_forecasts")
             latest_fetch = self._get_latest_fetch("hrrr_forecasts")
@@ -325,10 +442,12 @@ class DataFreshnessTracker:
         )
 
     def get_all_freshness(self) -> list[FreshnessStatus]:
-        """Return freshness for all 4 sources."""
+        """Return freshness for all 6 sources."""
         return [
             self.get_freshness("gfs_ensemble"),
             self.get_freshness("ecmwf"),
+            self.get_freshness("icon_eps"),
+            self.get_freshness("gem"),
             self.get_freshness("hrrr"),
             self.get_freshness("nws"),
         ]
