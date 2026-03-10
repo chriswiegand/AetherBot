@@ -1,6 +1,6 @@
 """Multi-model probability blender.
 
-Combines probabilities from GFS ensemble, HRRR, and NWS using
+Combines probabilities from GFS ensemble, ECMWF IFS, HRRR, and NWS using
 inverse-variance-inspired weighting with lead-time adjustments.
 
 This is analogous to combining analytical measurements from
@@ -23,6 +23,20 @@ class ModelBlender:
 
     def __init__(self, weights_config: ModelWeightsConfig):
         self.weights = weights_config
+        self._adaptive_weights: dict[str, float] | None = None
+
+    def set_adaptive_weights(self, weights: dict[str, float]) -> None:
+        """Set performance-based adaptive weights.
+
+        These modulate (not replace) the fixed lead-time curves.
+        Pass None to disable adaptive weighting.
+        """
+        self._adaptive_weights = weights
+        if weights:
+            logger.info(
+                "Adaptive weights active: "
+                + ", ".join(f"{k}={v:.3f}" for k, v in weights.items())
+            )
 
     def blend(
         self,
@@ -30,6 +44,7 @@ class ModelBlender:
         hrrr_prob: float | None = None,
         nws_prob: float | None = None,
         lead_hours: float = 24.0,
+        ecmwf_prob: float | None = None,
     ) -> float:
         """Compute weighted blend of model probabilities.
 
@@ -38,21 +53,43 @@ class ModelBlender:
             hrrr_prob: HRRR-derived probability (None if unavailable)
             nws_prob: NWS-derived probability (None if unavailable)
             lead_hours: Hours from now to target date afternoon
+            ecmwf_prob: ECMWF IFS ensemble probability (None if unavailable)
 
         Returns:
             Blended probability (0.0 to 1.0)
         """
-        # Start with base weights from config
-        w_ens = self.weights.gfs_ensemble
+        # Lead-time-adaptive weights: GFS decays as HRRR becomes more reliable
+        w_ens = self.weights.get_gfs_weight(lead_hours)
         w_hrrr = self.weights.get_hrrr_weight(lead_hours) if hrrr_prob is not None else 0.0
         w_nws = self.weights.nws if nws_prob is not None else 0.0
 
+        # ECMWF gets same weight curve as GFS (both are global ensembles)
+        # When ECMWF is present, split the GFS weight between the two
+        w_ecmwf = 0.0
+        if ecmwf_prob is not None:
+            w_ecmwf = w_ens * 0.45  # ECMWF gets 45% of the global-ensemble share
+            w_ens = w_ens * 0.55    # GFS keeps 55% (it has hourly resolution)
+
+        # Modulate with adaptive performance-based weights (30% adaptive, 70% fixed)
+        if self._adaptive_weights:
+            alpha = 0.3
+            if "ensemble" in self._adaptive_weights:
+                w_ens = alpha * self._adaptive_weights["ensemble"] + (1 - alpha) * w_ens
+            if ecmwf_prob is not None and "ecmwf" in self._adaptive_weights:
+                w_ecmwf = alpha * self._adaptive_weights["ecmwf"] + (1 - alpha) * w_ecmwf
+            if hrrr_prob is not None and "hrrr" in self._adaptive_weights:
+                w_hrrr = alpha * self._adaptive_weights["hrrr"] + (1 - alpha) * w_hrrr
+            if nws_prob is not None and "nws" in self._adaptive_weights:
+                w_nws = alpha * self._adaptive_weights["nws"] + (1 - alpha) * w_nws
+
         # Build weighted sum
-        total_weight = w_ens + w_hrrr + w_nws
+        total_weight = w_ens + w_ecmwf + w_hrrr + w_nws
         if total_weight == 0:
             return ensemble_prob  # Fallback
 
         blended = w_ens * ensemble_prob
+        if ecmwf_prob is not None:
+            blended += w_ecmwf * ecmwf_prob
         if hrrr_prob is not None:
             blended += w_hrrr * hrrr_prob
         if nws_prob is not None:

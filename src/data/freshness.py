@@ -4,6 +4,7 @@ Tracks when each data source was last updated and determines whether
 new model runs should be available for fetching.
 
 GFS Ensemble: Runs at 00Z, 06Z, 12Z, 18Z — data available ~4.5h after run start
+ECMWF IFS: Runs at 00Z, 06Z, 12Z, 18Z — data available ~6h after run start
 HRRR: Runs every hour — data available ~55min after run start
 NWS: Updates ~2x/day — no fixed schedule, check staleness
 """
@@ -24,6 +25,7 @@ GFS_RUN_HOURS = [0, 6, 12, 18]
 # Staleness thresholds (minutes)
 THRESHOLDS = {
     "gfs_ensemble": {"green": 420, "yellow": 780},   # 7h / 13h
+    "ecmwf":        {"green": 480, "yellow": 840},   # 8h / 14h (slightly laggier than GFS)
     "hrrr":         {"green": 120, "yellow": 240},    # 2h / 4h
     "nws":          {"green": 360, "yellow": 720},    # 6h / 12h
 }
@@ -44,10 +46,12 @@ class FreshnessStatus:
 class DataFreshnessTracker:
     """Checks data freshness and decides whether to fetch new data."""
 
-    def __init__(self, db_path: Path, gfs_lag_hours: float = 4.5, hrrr_lag_hours: float = 1.0):
+    def __init__(self, db_path: Path, gfs_lag_hours: float = 4.5, hrrr_lag_hours: float = 1.0,
+                 ecmwf_lag_hours: float = 6.0):
         self.db_path = db_path
         self.gfs_lag_hours = gfs_lag_hours
         self.hrrr_lag_hours = hrrr_lag_hours
+        self.ecmwf_lag_hours = ecmwf_lag_hours
 
     def _get_conn(self) -> sqlite3.Connection:
         conn = sqlite3.connect(str(self.db_path))
@@ -192,6 +196,51 @@ class DataFreshnessTracker:
 
         return False
 
+    def _latest_expected_ecmwf_run(self) -> datetime:
+        """Compute the latest ECMWF run whose data should be available now.
+
+        ECMWF IFS runs at 00Z, 06Z, 12Z, 18Z. Data available ~ecmwf_lag_hours after.
+        """
+        now = datetime.now(timezone.utc)
+        available_cutoff = now - timedelta(hours=self.ecmwf_lag_hours)
+        for day_offset in [0, -1]:
+            check_day = now.date() + timedelta(days=day_offset)
+            for run_hour in reversed(GFS_RUN_HOURS):  # Same 4x/day schedule
+                run_time = datetime(
+                    check_day.year, check_day.month, check_day.day,
+                    run_hour, 0, 0, tzinfo=timezone.utc
+                )
+                if run_time <= available_cutoff:
+                    return run_time
+        yesterday = now.date() - timedelta(days=1)
+        return datetime(yesterday.year, yesterday.month, yesterday.day, 0, 0, 0, tzinfo=timezone.utc)
+
+    def should_fetch_ecmwf(self) -> bool:
+        """True if a newer ECMWF run should be available than what's in the DB."""
+        latest_in_db = self._get_latest_model_run("ecmwf_forecasts")
+        expected = self._latest_expected_ecmwf_run()
+
+        if not latest_in_db:
+            logger.info("No ECMWF data in DB — should fetch")
+            return True
+
+        try:
+            ts = latest_in_db.replace(" ", "T")
+            if not ts.endswith("Z") and "+" not in ts and "-" not in ts[10:]:
+                ts += "Z"
+            db_time = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        except Exception:
+            return True
+
+        if expected > db_time:
+            logger.info(
+                f"Newer ECMWF run available: expected={expected.isoformat()}, "
+                f"db_latest={latest_in_db}"
+            )
+            return True
+
+        return False
+
     def should_fetch_hrrr(self) -> bool:
         """True if a newer HRRR run should be available than what's in the DB."""
         latest_in_db = self._get_latest_model_run("hrrr_forecasts")
@@ -238,6 +287,11 @@ class DataFreshnessTracker:
             latest_fetch = self._get_latest_fetch("ensemble_forecasts")
             staleness = self._compute_staleness(latest_run)
             next_exp = self._next_expected_gfs_run().isoformat()
+        elif source == "ecmwf":
+            latest_run = self._get_latest_model_run("ecmwf_forecasts")
+            latest_fetch = self._get_latest_fetch("ecmwf_forecasts")
+            staleness = self._compute_staleness(latest_run)
+            next_exp = None  # Similar to GFS schedule
         elif source == "hrrr":
             latest_run = self._get_latest_model_run("hrrr_forecasts")
             latest_fetch = self._get_latest_fetch("hrrr_forecasts")
@@ -271,9 +325,10 @@ class DataFreshnessTracker:
         )
 
     def get_all_freshness(self) -> list[FreshnessStatus]:
-        """Return freshness for all 3 sources."""
+        """Return freshness for all 4 sources."""
         return [
             self.get_freshness("gfs_ensemble"),
+            self.get_freshness("ecmwf"),
             self.get_freshness("hrrr"),
             self.get_freshness("nws"),
         ]

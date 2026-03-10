@@ -11,7 +11,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 from apscheduler.triggers.cron import CronTrigger
 
 from src.config.settings import load_settings
-from src.data.db import init_db
+from src.data.db import init_db, get_session
 from src.scheduler.jobs import (
     BotContext,
     smart_data_fetch,
@@ -21,6 +21,7 @@ from src.scheduler.jobs import (
 )
 from src.execution.settlement_checker import SettlementChecker
 from src.monitoring.pnl_tracker import PnLTracker
+from src.monitoring.email_reporter import send_daily_email
 
 logger = logging.getLogger(__name__)
 
@@ -59,11 +60,17 @@ def run_bot():
     ctx = BotContext(settings)
     logger.info(f"Tracking {len(ctx.cities)} cities: {', '.join(ctx.cities.keys())}")
 
-    # Create settlement checker
+    # Create settlement checker (paper_trader is None in live mode — that's fine,
+    # settlement_checker handles live trades via manual settlement path)
     settlement_checker = SettlementChecker(
-        ctx.cities, paper_trader=ctx.paper_trader
+        ctx.cities, paper_trader=ctx.paper_trader, settings=settings
     )
-    pnl_tracker = PnLTracker(get_bankroll=lambda: ctx.paper_trader.bankroll)
+
+    # Bankroll source depends on mode
+    if settings.mode == "live":
+        pnl_tracker = PnLTracker(get_bankroll=lambda: ctx.kalshi_client.get_balance())
+    else:
+        pnl_tracker = PnLTracker(get_bankroll=lambda: ctx.trader.bankroll)
 
     # Create scheduler
     scheduler = BlockingScheduler()
@@ -94,6 +101,17 @@ def run_bot():
     )
 
     # ---------------------------------------------------------------
+    # Order sync (live mode only — check pending orders every 5 min)
+    # ---------------------------------------------------------------
+    if settings.mode == "live":
+        scheduler.add_job(
+            ctx.trader.sync_open_orders,
+            trigger=IntervalTrigger(minutes=5),
+            id="sync_orders",
+            name="Sync Live Orders",
+        )
+
+    # ---------------------------------------------------------------
     # Core trading cycle (every 5 minutes, reads from DB — cheap)
     # ---------------------------------------------------------------
     scheduler.add_job(
@@ -116,27 +134,103 @@ def run_bot():
     )
 
     # ---------------------------------------------------------------
-    # Settlement check (daily at 11:15 AM ET)
+    # Helpers for post-settlement model retuning
     # ---------------------------------------------------------------
+    def _retrain_calibrator():
+        """Retrain isotonic calibrator if new settlement data is available."""
+        try:
+            if ctx.calibrator_trainer.should_retrain():
+                logger.info("Calibrator retraining triggered")
+                if ctx.calibrator_trainer.retrain():
+                    ctx.calibrator = ctx.calibrator_trainer.calibrator
+                    logger.info("Live calibrator updated from retraining")
+        except Exception as e:
+            logger.error(f"Calibrator retrain check failed: {e}")
+
+    def _update_adaptive_weights():
+        """Recompute adaptive blend weights from recent model performance."""
+        try:
+            weights = ctx.adaptive_weight_mgr.compute_and_save()
+            if weights:
+                ctx.model_blender.set_adaptive_weights(weights)
+                logger.info(f"Adaptive blend weights updated: {weights}")
+        except Exception as e:
+            logger.error(f"Adaptive weight update failed: {e}")
+
+    def _get_observed_high(city_name: str, target_date: str) -> int | None:
+        """Look up observed high from the observations table."""
+        from src.data.models import Observation
+        session = get_session()
+        try:
+            obs = (
+                session.query(Observation)
+                .filter_by(city=city_name, date=target_date)
+                .first()
+            )
+            return obs.high_f if obs else None
+        finally:
+            session.close()
+
+    # ---------------------------------------------------------------
+    # Settlement check + immediate model retuning (daily at 11:15 AM ET)
+    # Settles trades → scores models → retrains calibrator → updates weights
+    # ---------------------------------------------------------------
+    def _settlement_and_retune():
+        settlement_checker.check_settlements()
+        _retrain_calibrator()
+        _update_adaptive_weights()
+
     scheduler.add_job(
-        settlement_checker.check_settlements,
+        _settlement_and_retune,
         trigger=CronTrigger(
             hour=sched.settlement_check_hour,
             minute=sched.settlement_check_minute,
             timezone="America/New_York",
         ),
         id="check_settlements",
-        name="Check Settlements",
+        name="Settlement + Retune",
     )
 
     # ---------------------------------------------------------------
-    # Daily report (noon ET)
+    # Post-settlement analysis safety net (11:45 AM ET)
+    # Re-runs model scoring + postmortem for yesterday in case the
+    # settlement integration missed anything. Also re-checks retune
+    # (idempotent — should_retrain() returns False if already ran)
     # ---------------------------------------------------------------
+    def _post_settlement_analysis():
+        from datetime import date as dt_date, timedelta
+        yesterday = (dt_date.today() - timedelta(days=1)).isoformat()
+        logger.info(f"Running post-settlement analysis safety net for {yesterday}")
+        settlement_checker._run_post_settlement_analysis(
+            yesterday,
+            {city_name: _get_observed_high(city_name, yesterday)
+             for city_name in ctx.cities},
+        )
+        _retrain_calibrator()
+        _update_adaptive_weights()
+
     scheduler.add_job(
-        pnl_tracker.generate_daily_report,
+        _post_settlement_analysis,
+        trigger=CronTrigger(hour=11, minute=45, timezone="America/New_York"),
+        id="post_settlement_analysis",
+        name="Post-Settlement Analysis",
+    )
+
+    # ---------------------------------------------------------------
+    # Daily report + email (noon ET)
+    # ---------------------------------------------------------------
+    def _daily_report_and_email():
+        pnl_tracker.generate_daily_report()
+        if settings.mode == "live":
+            send_daily_email(settings, get_bankroll=lambda: ctx.kalshi_client.get_balance())
+        else:
+            send_daily_email(settings, get_bankroll=lambda: ctx.trader.bankroll)
+
+    scheduler.add_job(
+        _daily_report_and_email,
         trigger=CronTrigger(hour=12, timezone="America/New_York"),
         id="daily_report",
-        name="Daily Report",
+        name="Daily Report + Email",
     )
 
     # Graceful shutdown

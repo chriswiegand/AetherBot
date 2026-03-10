@@ -55,6 +55,7 @@ class StrategyConfig:
     max_position_pct: float = 0.10
     max_position_dollars: float = 1000
     daily_loss_limit: float = 300
+    daily_spend_limit: float = 0  # 0 = unlimited; >0 = hard cap on daily wagers
     max_concurrent_positions: int = 20
     max_positions_per_city: int = 6
     max_positions_per_date: int = 4
@@ -72,27 +73,52 @@ class ModelWeightsConfig:
     hrrr_weight_by_lead_hours: dict[int, float] = field(default_factory=lambda: {
         0: 0.45, 6: 0.35, 12: 0.25, 24: 0.15, 48: 0.05
     })
+    gfs_weight_by_lead_hours: dict[int, float] = field(default_factory=lambda: {
+        0: 0.15, 6: 0.25, 12: 0.35, 18: 0.40, 24: 0.50, 48: 0.60
+    })
 
-    def get_hrrr_weight(self, lead_hours: float) -> float:
-        """Interpolate HRRR weight based on lead time."""
-        breakpoints = sorted(self.hrrr_weight_by_lead_hours.keys())
+    def _interpolate(self, schedule: dict[int, float], lead_hours: float, fallback: float) -> float:
+        """Interpolate a weight from a lead-hour schedule."""
+        breakpoints = sorted(schedule.keys())
         if lead_hours <= breakpoints[0]:
-            return self.hrrr_weight_by_lead_hours[breakpoints[0]]
+            return schedule[breakpoints[0]]
         if lead_hours >= breakpoints[-1]:
-            return self.hrrr_weight_by_lead_hours[breakpoints[-1]]
+            return schedule[breakpoints[-1]]
         for i in range(len(breakpoints) - 1):
             lo, hi = breakpoints[i], breakpoints[i + 1]
             if lo <= lead_hours <= hi:
                 frac = (lead_hours - lo) / (hi - lo)
-                w_lo = self.hrrr_weight_by_lead_hours[lo]
-                w_hi = self.hrrr_weight_by_lead_hours[hi]
-                return w_lo + frac * (w_hi - w_lo)
-        return self.hrrr
+                return schedule[lo] + frac * (schedule[hi] - schedule[lo])
+        return fallback
+
+    def get_hrrr_weight(self, lead_hours: float) -> float:
+        """Interpolate HRRR weight based on lead time."""
+        return self._interpolate(self.hrrr_weight_by_lead_hours, lead_hours, self.hrrr)
+
+    def get_gfs_weight(self, lead_hours: float) -> float:
+        """Interpolate GFS ensemble weight based on lead time.
+
+        GFS weight decays as lead time decreases because HRRR
+        (hourly updates, 3km resolution) becomes far more accurate
+        than GFS (6-hourly, 25km) near settlement.
+        """
+        return self._interpolate(self.gfs_weight_by_lead_hours, lead_hours, self.gfs_ensemble)
 
 
 @dataclass
 class PaperTradingConfig:
     initial_bankroll: float = 10000
+
+
+@dataclass
+class EmailConfig:
+    enabled: bool = False
+    recipient: str = ""
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 587
+
+    def __post_init__(self):
+        self.app_password = os.getenv("GMAIL_APP_PASSWORD", "")
 
 
 @dataclass
@@ -133,6 +159,20 @@ class DatabaseConfig:
 
 
 @dataclass
+class ArchivalConfig:
+    enabled: bool = True
+    archive_dir: str = "data/archives"
+    retention_days: int = 730
+
+    @property
+    def absolute_dir(self) -> Path:
+        p = Path(self.archive_dir)
+        if not p.is_absolute():
+            return PROJECT_ROOT / p
+        return p
+
+
+@dataclass
 class AppSettings:
     mode: str = "paper"
     kalshi: KalshiConfig = field(default_factory=KalshiConfig)
@@ -141,7 +181,9 @@ class AppSettings:
     model_weights: ModelWeightsConfig = field(default_factory=ModelWeightsConfig)
     paper_trading: PaperTradingConfig = field(default_factory=PaperTradingConfig)
     scheduler: SchedulerConfig = field(default_factory=SchedulerConfig)
+    email: EmailConfig = field(default_factory=EmailConfig)
     database: DatabaseConfig = field(default_factory=DatabaseConfig)
+    archival: ArchivalConfig = field(default_factory=ArchivalConfig)
 
 
 def _build_dataclass(cls, data: dict):
@@ -170,6 +212,8 @@ def load_settings(config_path: Path | None = None) -> AppSettings:
         model_weights=_build_dataclass(ModelWeightsConfig, raw.get("model_weights", {})),
         paper_trading=_build_dataclass(PaperTradingConfig, raw.get("paper_trading", {})),
         scheduler=_build_dataclass(SchedulerConfig, raw.get("scheduler", {})),
+        email=_build_dataclass(EmailConfig, raw.get("email", {})),
         database=_build_dataclass(DatabaseConfig, raw.get("database", {})),
+        archival=_build_dataclass(ArchivalConfig, raw.get("archival", {})),
     )
     return settings

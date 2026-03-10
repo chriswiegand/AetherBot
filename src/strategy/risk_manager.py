@@ -25,6 +25,7 @@ class PortfolioState:
     positions_by_city: dict[str, int] = field(default_factory=dict)
     positions_by_date: dict[str, int] = field(default_factory=dict)
     total_exposure: float = 0.0
+    daily_spend: float = 0.0  # Total cost of all trades placed today
 
     @property
     def daily_total_pnl(self) -> float:
@@ -55,6 +56,15 @@ class RiskManager:
         Returns:
             RiskCheckResult with (allowed, reason)
         """
+        # 0. Daily spend limit (hard cap on total wagered today)
+        if self.config.daily_spend_limit > 0:
+            if portfolio.daily_spend + total_cost > self.config.daily_spend_limit:
+                return RiskCheckResult(
+                    False,
+                    f"Daily spend limit: ${portfolio.daily_spend:.2f} + "
+                    f"${total_cost:.2f} > ${self.config.daily_spend_limit:.2f}",
+                )
+
         # 1. Daily loss limit
         if portfolio.daily_total_pnl <= -self.config.daily_loss_limit:
             return RiskCheckResult(
@@ -109,16 +119,24 @@ class RiskManager:
 
         return RiskCheckResult(True, "All risk checks passed")
 
-    def get_portfolio_state(self, bankroll: float) -> PortfolioState:
-        """Build current portfolio state from the database."""
+    def get_portfolio_state(
+        self, bankroll: float, mode: str = "live"
+    ) -> PortfolioState:
+        """Build current portfolio state from the database.
+
+        Args:
+            bankroll: Current bankroll in dollars
+            mode: Only count trades matching this mode ('live' or 'paper')
+        """
         session = get_session()
         try:
             today = date.today().isoformat()
 
-            # Open positions
+            # Open positions (filtered by mode)
             open_trades = (
                 session.query(Trade)
                 .filter(Trade.status.in_(["filled", "pending"]))
+                .filter_by(mode=mode)
                 .all()
             )
 
@@ -133,14 +151,25 @@ class RiskManager:
                 )
                 total_exposure += trade.total_cost
 
-            # Today's realized PnL
+            # Today's realized PnL (filtered by mode)
             settled_today = (
                 session.query(Trade)
                 .filter(Trade.settled_at != None)
                 .filter(Trade.settled_at >= today)
+                .filter_by(mode=mode)
                 .all()
             )
             daily_realized = sum(t.pnl or 0 for t in settled_today)
+
+            # Total cost of all trades created today (filtered by mode)
+            trades_today = (
+                session.query(Trade)
+                .filter(Trade.created_at >= today)
+                .filter(Trade.status != "cancelled")
+                .filter_by(mode=mode)
+                .all()
+            )
+            daily_spend = sum(t.total_cost for t in trades_today)
 
             return PortfolioState(
                 bankroll=bankroll,
@@ -150,6 +179,7 @@ class RiskManager:
                 positions_by_city=positions_by_city,
                 positions_by_date=positions_by_date,
                 total_exposure=total_exposure,
+                daily_spend=daily_spend,
             )
 
         finally:

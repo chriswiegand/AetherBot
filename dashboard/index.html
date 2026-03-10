@@ -446,6 +446,29 @@
     animation:spin 1s linear infinite;
     pointer-events:none;
   }
+  .btn-refresh-all{
+    background:none;
+    border:1px solid var(--accent);
+    border-radius:4px;
+    color:var(--accent);
+    cursor:pointer;
+    font-size:.78rem;
+    font-weight:500;
+    padding:4px 10px;
+    transition:all 0.2s;
+    white-space:nowrap;
+  }
+  .btn-refresh-all:hover{
+    background:rgba(88,166,255,.15);
+  }
+  .btn-refresh-all.refreshing{
+    pointer-events:none;
+    opacity:.7;
+  }
+  .btn-refresh-all.refreshing .refresh-icon{
+    display:inline-block;
+    animation:spin 1s linear infinite;
+  }
   @keyframes spin{
     from{transform:rotate(0deg)}
     to{transform:rotate(360deg)}
@@ -459,6 +482,130 @@
   }
   .cp-stat-label{color:var(--text-secondary)}
   .cp-stat-value{color:var(--text-primary);font-weight:500}
+
+  /* ---------- Risk Limits Panel ---------- */
+  .risk-limits-panel{
+    background:var(--bg-card);
+    border:1px solid var(--border);
+    border-radius:var(--radius);
+    padding:12px 16px;
+    margin-bottom:16px;
+    box-shadow:var(--shadow);
+  }
+  .rl-header{
+    display:flex;
+    align-items:center;
+    justify-content:space-between;
+    margin-bottom:10px;
+  }
+  .rl-grid{
+    display:grid;
+    grid-template-columns:repeat(3, 1fr);
+    gap:10px;
+  }
+  @media(max-width:767px){
+    .rl-grid{grid-template-columns:1fr 1fr}
+  }
+  @media(max-width:480px){
+    .rl-grid{grid-template-columns:1fr}
+  }
+  .rl-field{
+    display:flex;
+    flex-direction:column;
+    gap:4px;
+  }
+  .rl-field label{
+    font-size:.7rem;
+    font-weight:600;
+    text-transform:uppercase;
+    letter-spacing:.05em;
+    color:var(--text-secondary);
+  }
+  .rl-field input{
+    background:var(--bg-canvas);
+    border:1px solid var(--border);
+    border-radius:6px;
+    color:var(--text-primary);
+    font-size:.85rem;
+    font-weight:600;
+    padding:6px 10px;
+    width:100%;
+    transition:border-color .2s;
+  }
+  .rl-field input:focus{
+    outline:none;
+    border-color:var(--accent);
+    box-shadow:0 0 0 2px rgba(88,166,255,.15);
+  }
+  .rl-field input.changed{
+    border-color:var(--yellow);
+    box-shadow:0 0 0 2px rgba(210,153,34,.15);
+  }
+  .rl-field .rl-hint{
+    font-size:.65rem;
+    color:var(--text-muted);
+  }
+  .btn-save-limits{
+    background:rgba(63,185,80,.15);
+    color:var(--green);
+    border:1px solid rgba(63,185,80,.3);
+    border-radius:6px;
+    padding:5px 14px;
+    font-size:.75rem;
+    font-weight:600;
+    cursor:pointer;
+    transition:all .15s;
+    display:none;
+  }
+  .btn-save-limits:hover{background:rgba(63,185,80,.25)}
+  .btn-save-limits.visible{display:inline-block}
+  .rl-status{
+    font-size:.7rem;
+    margin-left:8px;
+    transition:opacity .3s;
+  }
+  .rl-status.success{color:var(--green)}
+  .rl-status.error{color:var(--red)}
+
+  /* ---------- Bet button in signals table ---------- */
+  .btn-bet{
+    background:rgba(63,185,80,.15);
+    color:var(--green);
+    border:1px solid rgba(63,185,80,.3);
+    border-radius:5px;
+    padding:3px 10px;
+    font-size:.7rem;
+    font-weight:600;
+    cursor:pointer;
+    transition:all .15s;
+    white-space:nowrap;
+  }
+  .btn-bet:hover{background:rgba(63,185,80,.3)}
+  .btn-bet:disabled{
+    opacity:.4;
+    cursor:not-allowed;
+  }
+  .btn-bet.pending{
+    background:rgba(210,153,34,.15);
+    color:var(--yellow);
+    border-color:rgba(210,153,34,.3);
+    pointer-events:none;
+  }
+  .btn-bet.done{
+    background:rgba(88,166,255,.1);
+    color:var(--accent);
+    border-color:rgba(88,166,255,.3);
+    pointer-events:none;
+  }
+  .btn-bet.failed{
+    background:rgba(248,81,73,.1);
+    color:var(--red);
+    border-color:rgba(248,81,73,.3);
+    cursor:pointer;
+  }
+  .rec-entry{font-size:.75rem;white-space:nowrap}
+  .rec-entry .rec-contracts{font-weight:600;color:var(--text-primary)}
+  .rec-entry .rec-cost{color:var(--text-secondary)}
 
   /* ---------- Loading shimmer ---------- */
   .shimmer{
@@ -488,6 +635,9 @@
       <a href="/whitepaper" class="header-link">Whitepaper</a>
       <a href="/strategy-lab" class="header-link">Strategy Lab</a>
       <a href="/math" class="header-link">Math</a>
+      <a href="/convergence" class="header-link">Convergence</a>
+      <a href="/evolution" class="header-link">Evolution</a>
+      <button class="btn-refresh-all" id="btn-refresh-all" onclick="refreshAll(this)" title="Refresh all data sources + markets">&#8635; Refresh All</button>
       <div class="reset-dropdown" id="reset-dropdown">
         <button class="btn-reset" onclick="toggleResetMenu(event)">Reset Trades</button>
         <div class="reset-menu" id="reset-menu">
@@ -536,6 +686,49 @@
       <div class="cp-stat">
         <span class="cp-stat-label">Last scan:</span>
         <span class="cp-stat-value" id="cp-last-scan">--</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ===== Risk Limits ===== -->
+  <div class="risk-limits-panel" id="risk-limits-panel">
+    <div class="rl-header">
+      <div class="cp-section-title" style="margin:0">Risk Limits</div>
+      <div>
+        <button class="btn-save-limits" id="btn-save-limits" onclick="saveRiskLimits()">Save Changes</button>
+        <span class="rl-status" id="rl-status"></span>
+      </div>
+    </div>
+    <div class="rl-grid">
+      <div class="rl-field">
+        <label for="rl-daily-spend">Max Bet / Day</label>
+        <input type="number" id="rl-daily-spend" step="1" min="0" max="500" data-key="daily_spend_limit">
+        <span class="rl-hint">Total $ wagered per day</span>
+      </div>
+      <div class="rl-field">
+        <label for="rl-max-trade">Max Bet Size</label>
+        <input type="number" id="rl-max-trade" step="0.5" min="0.5" max="200" data-key="max_position_dollars">
+        <span class="rl-hint">$ per single trade</span>
+      </div>
+      <div class="rl-field">
+        <label for="rl-max-concurrent">Max Open Positions</label>
+        <input type="number" id="rl-max-concurrent" step="1" min="1" max="100" data-key="max_concurrent_positions">
+        <span class="rl-hint">Unsettled positions</span>
+      </div>
+      <div class="rl-field">
+        <label for="rl-max-city">Max / City</label>
+        <input type="number" id="rl-max-city" step="1" min="1" max="50" data-key="max_positions_per_city">
+        <span class="rl-hint">Positions per city</span>
+      </div>
+      <div class="rl-field">
+        <label for="rl-max-date">Max / Date</label>
+        <input type="number" id="rl-max-date" step="1" min="1" max="50" data-key="max_positions_per_date">
+        <span class="rl-hint">Positions per settlement date</span>
+      </div>
+      <div class="rl-field">
+        <label for="rl-daily-loss">Daily Loss Limit</label>
+        <input type="number" id="rl-daily-loss" step="1" min="1" max="1000" data-key="daily_loss_limit">
+        <span class="rl-hint">Stop if realized PnL hits -$</span>
       </div>
     </div>
   </div>
@@ -651,13 +844,17 @@
             <th>City</th>
             <th>Date</th>
             <th>Model Prob</th>
-            <th>Mkt Price</th>
+            <th>Bid</th>
+            <th>Ask</th>
             <th>Edge</th>
             <th>Lead Hrs</th>
+            <th>Side</th>
+            <th>Rec. Entry</th>
+            <th></th>
           </tr>
         </thead>
         <tbody id="signals-body">
-          <tr><td colspan="7" class="no-data">Loading...</td></tr>
+          <tr><td colspan="11" class="no-data">Loading...</td></tr>
         </tbody>
       </table>
     </div>
@@ -764,6 +961,14 @@ function fmtEdge(edge) {
   // if already in 0-1 range, convert to percent
   if (Math.abs(e) < 1) e = e * 100;
   return e.toFixed(1) + '%';
+}
+
+function fmtCents(v) {
+  if (v == null) return '--';
+  var n = Number(v);
+  // Convert from 0-1 scale to cents
+  if (n > 0 && n < 1) n = Math.round(n * 100);
+  return n + 'c';
 }
 
 function relativeTime(ts) {
@@ -1047,22 +1252,108 @@ async function loadSignals() {
   var tbody = $('signals-body');
 
   if (!data || !Array.isArray(data) || data.length === 0) {
-    tbody.innerHTML = '<tr><td colspan="7" class="no-data">No signals</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="11" class="no-data">No signals</td></tr>';
     return;
   }
 
-  tbody.innerHTML = data.map(function(s) {
+  tbody.innerHTML = data.map(function(s, i) {
     var modelProb = s.calibrated_prob || s.blended_prob || s.ensemble_prob;
+    var rec = s.rec || {};
+    var sideHtml = rec.side ? '<span class="' + sideClass(rec.side) + '">' + rec.side.toUpperCase() + '</span>' : '--';
+
+    // Bid/Ask: show the relevant side's bid and ask
+    var bidStr = '--', askStr = '--';
+    if (rec.side === 'yes') {
+      bidStr = s.yes_bid != null ? fmtCents(s.yes_bid) : '--';
+      askStr = s.yes_ask != null ? fmtCents(s.yes_ask) : '--';
+    } else {
+      bidStr = s.no_bid != null ? fmtCents(s.no_bid) : '--';
+      askStr = s.no_ask != null ? fmtCents(s.no_ask) : '--';
+    }
+
+    var recHtml = '--';
+    if (rec.contracts > 0) {
+      recHtml = '<span class="rec-entry">'
+        + '<span class="rec-contracts">' + rec.contracts + 'x</span> @ '
+        + rec.price_cents + 'c'
+        + ' <span class="rec-cost">($' + rec.total_cost.toFixed(2) + ')</span>'
+        + '</span>';
+    }
+
+    var btnHtml = '';
+    if (rec.tradeable) {
+      btnHtml = '<button class="btn-bet" id="bet-' + i + '" '
+        + 'onclick="placeTrade(' + i + ')"'
+        + '>Bet</button>';
+    }
+
     return '<tr>'
       + '<td><a href="' + kalshiUrl(s.market_ticker) + '" target="_blank" class="text-accent">' + esc(s.market_ticker) + '</a></td>'
       + '<td>' + esc(s.city || '') + '</td>'
       + '<td>' + esc(s.target_date || '') + '</td>'
       + '<td>' + fmtPct(modelProb) + '</td>'
-      + '<td>' + fmtPct(s.market_price) + '</td>'
+      + '<td class="positive">' + bidStr + '</td>'
+      + '<td class="negative">' + askStr + '</td>'
       + '<td class="' + edgeColor(s.edge) + '">' + fmtEdge(s.edge) + '</td>'
       + '<td>' + (s.lead_hours != null ? Number(s.lead_hours).toFixed(0) + 'h' : '--') + '</td>'
+      + '<td>' + sideHtml + '</td>'
+      + '<td>' + recHtml + '</td>'
+      + '<td>' + btnHtml + '</td>'
       + '</tr>';
   }).join('');
+
+  // Stash signal data for placeTrade
+  window._signalData = data;
+}
+
+async function placeTrade(idx) {
+  var s = window._signalData && window._signalData[idx];
+  if (!s || !s.rec) return;
+
+  var rec = s.rec;
+  var btn = $('bet-' + idx);
+  if (!btn) return;
+
+  // Confirm
+  var msg = rec.side.toUpperCase() + ' ' + rec.contracts + 'x ' + s.market_ticker
+    + ' @ ' + rec.price_cents + 'c ($' + rec.total_cost.toFixed(2) + ')';
+  if (!confirm('Place trade?\n\n' + msg)) return;
+
+  btn.textContent = 'Placing...';
+  btn.className = 'btn-bet pending';
+
+  try {
+    var res = await fetch(API_BASE + '/api/trade/place', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({
+        market_ticker: s.market_ticker,
+        city: s.city,
+        target_date: s.target_date,
+        side: rec.side,
+        contracts: rec.contracts,
+        price_cents: rec.price_cents,
+        model_prob: s.calibrated_prob || s.blended_prob || s.ensemble_prob,
+        market_price: s.market_price,
+        edge: s.edge,
+        kelly: rec.kelly,
+      })
+    });
+    var result = await res.json();
+    if (res.ok && result.ok) {
+      btn.textContent = 'Placed';
+      btn.className = 'btn-bet done';
+      // Refresh trades table
+      loadTrades();
+      loadStatus();
+    } else {
+      btn.textContent = result.error || 'Failed';
+      btn.className = 'btn-bet failed';
+    }
+  } catch (e) {
+    btn.textContent = 'Error';
+    btn.className = 'btn-bet failed';
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -1339,6 +1630,54 @@ async function manualRefresh(source, btn) {
 }
 
 // ---------------------------------------------------------------------------
+//  Refresh All — triggers GFS + HRRR + NWS + Markets in parallel
+// ---------------------------------------------------------------------------
+async function refreshAll(btn) {
+  btn.classList.add('refreshing');
+  btn.innerHTML = '<span class="refresh-icon">&#8635;</span> Refreshing\u2026';
+  btn.disabled = true;
+  try {
+    var resp = await fetch(API_BASE + '/api/refresh/all', { method: 'POST' });
+    var data = await resp.json();
+
+    if (data.status === 'started' || data.started) {
+      // Poll aggregate status every 3 seconds until all done
+      var attempts = 0;
+      var maxAttempts = 60;  // 3 minutes max
+      var pollInterval = setInterval(async function() {
+        attempts++;
+        try {
+          var sr = await fetch(API_BASE + '/api/refresh/all/status');
+          var sd = await sr.json();
+          if (!sd.running || attempts >= maxAttempts) {
+            clearInterval(pollInterval);
+            btn.classList.remove('refreshing');
+            btn.innerHTML = '&#8635; Refresh All';
+            btn.disabled = false;
+            // Full dashboard refresh to pick up new data
+            refresh();
+          }
+        } catch (e2) {
+          clearInterval(pollInterval);
+          btn.classList.remove('refreshing');
+          btn.innerHTML = '&#8635; Refresh All';
+          btn.disabled = false;
+        }
+      }, 3000);
+    } else {
+      btn.classList.remove('refreshing');
+      btn.innerHTML = '&#8635; Refresh All';
+      btn.disabled = false;
+    }
+  } catch (e) {
+    btn.classList.remove('refreshing');
+    btn.innerHTML = '&#8635; Refresh All';
+    btn.disabled = false;
+    console.error('Refresh all failed:', e);
+  }
+}
+
+// ---------------------------------------------------------------------------
 //  Render: Edge Trajectory Chart
 // ---------------------------------------------------------------------------
 var edgeChart = null;
@@ -1495,6 +1834,97 @@ function buildEdgeChart(datasets) {
 }
 
 // ---------------------------------------------------------------------------
+//  Risk Limits Controls
+// ---------------------------------------------------------------------------
+var _rlOriginal = {};  // original values from server
+
+async function loadRiskLimits() {
+  try {
+    var res = await fetch(API_BASE + '/api/risk-limits');
+    if (!res.ok) return;
+    var data = await res.json();
+    _rlOriginal = Object.assign({}, data);
+
+    // Populate each input
+    var inputs = document.querySelectorAll('#risk-limits-panel input[data-key]');
+    inputs.forEach(function(inp) {
+      var key = inp.getAttribute('data-key');
+      if (data[key] != null) {
+        inp.value = data[key];
+      }
+      inp.classList.remove('changed');
+      inp.addEventListener('input', onRiskLimitChange);
+    });
+    $('btn-save-limits').classList.remove('visible');
+    $('rl-status').textContent = '';
+  } catch (e) {
+    console.error('Failed to load risk limits:', e);
+  }
+}
+
+function onRiskLimitChange() {
+  var anyChanged = false;
+  var inputs = document.querySelectorAll('#risk-limits-panel input[data-key]');
+  inputs.forEach(function(inp) {
+    var key = inp.getAttribute('data-key');
+    var orig = _rlOriginal[key];
+    var cur = Number(inp.value);
+    if (orig != null && cur !== orig) {
+      inp.classList.add('changed');
+      anyChanged = true;
+    } else {
+      inp.classList.remove('changed');
+    }
+  });
+  if (anyChanged) {
+    $('btn-save-limits').classList.add('visible');
+  } else {
+    $('btn-save-limits').classList.remove('visible');
+  }
+  $('rl-status').textContent = '';
+}
+
+async function saveRiskLimits() {
+  var payload = {};
+  var inputs = document.querySelectorAll('#risk-limits-panel input[data-key]');
+  inputs.forEach(function(inp) {
+    var key = inp.getAttribute('data-key');
+    var cur = Number(inp.value);
+    if (_rlOriginal[key] != null && cur !== _rlOriginal[key]) {
+      payload[key] = cur;
+    }
+  });
+
+  if (Object.keys(payload).length === 0) return;
+
+  var statusEl = $('rl-status');
+  try {
+    var res = await fetch(API_BASE + '/api/risk-limits', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    var data = await res.json();
+    if (res.ok && data.ok) {
+      // Update originals
+      Object.assign(_rlOriginal, data.updated);
+      inputs.forEach(function(inp) { inp.classList.remove('changed'); });
+      $('btn-save-limits').classList.remove('visible');
+      statusEl.textContent = 'Saved';
+      statusEl.className = 'rl-status success';
+      setTimeout(function() { statusEl.textContent = ''; }, 3000);
+    } else {
+      var msg = data.details ? data.details.join(', ') : (data.error || 'Unknown error');
+      statusEl.textContent = msg;
+      statusEl.className = 'rl-status error';
+    }
+  } catch (e) {
+    statusEl.textContent = 'Network error';
+    statusEl.className = 'rl-status error';
+  }
+}
+
+// ---------------------------------------------------------------------------
 //  Master refresh
 // ---------------------------------------------------------------------------
 async function refresh() {
@@ -1512,6 +1942,7 @@ async function refresh() {
 }
 
 // Initial load
+loadRiskLimits();  // load once (not on every 30s refresh)
 refresh();
 
 // Auto-refresh

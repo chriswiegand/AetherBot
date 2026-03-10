@@ -34,6 +34,25 @@ class EnsembleForecast(Base):
     )
 
 
+class ECMWFForecast(Base):
+    """ECMWF IFS ensemble data: one row per (run, city, valid_time, member)."""
+    __tablename__ = "ecmwf_forecasts"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    city = Column(Text, nullable=False)
+    station = Column(Text, nullable=False)
+    model_run_time = Column(Text, nullable=False)  # ISO8601 UTC
+    valid_time = Column(Text, nullable=False)        # ISO8601 UTC
+    member = Column(Integer, nullable=False)          # 0-50
+    temperature_f = Column(Float, nullable=False)
+    fetched_at = Column(Text, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("city", "model_run_time", "valid_time", "member"),
+        Index("idx_ecmwf_city_date", "city", "valid_time"),
+    )
+
+
 class HRRRForecast(Base):
     """HRRR deterministic forecasts."""
     __tablename__ = "hrrr_forecasts"
@@ -85,6 +104,24 @@ class Observation(Base):
     __table_args__ = (
         UniqueConstraint("city", "date", "source"),
         Index("idx_obs_city_date", "city", "date"),
+    )
+
+
+class HourlyObservation(Base):
+    """Hourly actual temperature observations from NWS for intraday tracking."""
+    __tablename__ = "hourly_observations"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    city = Column(Text, nullable=False)
+    station = Column(Text, nullable=False)
+    observed_at = Column(Text, nullable=False)   # ISO8601 UTC from NWS
+    temperature_f = Column(Float)
+    description = Column(Text)                    # e.g., "Partly Cloudy"
+    fetched_at = Column(Text, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("station", "observed_at"),
+        Index("idx_hourly_obs_city_time", "city", "observed_at"),
     )
 
 
@@ -145,6 +182,7 @@ class Signal(Base):
 
     # Raw probabilities
     ensemble_prob = Column(Float)
+    ecmwf_prob = Column(Float)
     hrrr_prob = Column(Float)
     nws_prob = Column(Float)
     blended_prob = Column(Float)
@@ -319,6 +357,48 @@ class BacktestRun(Base):
 
     created_at = Column(Text, nullable=False)
     duration_seconds = Column(Float)
+
+
+class ModelScorecard(Base):
+    """Per-model scoring against settlement outcomes.
+
+    One row per (city, target_date, market_ticker, model_source).
+    Stores the 'report card' for each model source on every market.
+    """
+    __tablename__ = "model_scorecards"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    city = Column(Text, nullable=False)
+    target_date = Column(Text, nullable=False)
+    market_ticker = Column(Text, nullable=False)
+    model_source = Column(Text, nullable=False)  # ensemble, hrrr, nws, blended, calibrated, market
+
+    # Score
+    final_prob = Column(Float)                    # Last signal probability
+    outcome = Column(Integer)                     # 0 or 1
+    observed_high_f = Column(Float)
+    brier_contribution = Column(Float)            # (final_prob - outcome)^2
+
+    # Convergence trajectory
+    first_prob = Column(Float)                    # Earliest signal
+    prob_at_24h = Column(Float)                   # At 24h lead
+    prob_at_12h = Column(Float)                   # At 12h lead
+    prob_at_6h = Column(Float)                    # At 6h lead
+    max_prob_swing = Column(Float)                # Largest consecutive change
+    final_lead_hours = Column(Float)              # Lead hours of last signal
+
+    # Ranking
+    distance_from_outcome = Column(Float)         # |final_prob - outcome|
+    was_best_model = Column(Integer, default=0)   # 1 if lowest distance
+    was_worst_model = Column(Integer, default=0)  # 1 if highest distance
+
+    created_at = Column(Text, nullable=False)
+
+    __table_args__ = (
+        UniqueConstraint("city", "target_date", "market_ticker", "model_source"),
+        Index("idx_scorecard_city_date", "city", "target_date"),
+        Index("idx_scorecard_source", "model_source"),
+    )
 
 
 class OptimizationRun(Base):

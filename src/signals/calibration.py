@@ -25,7 +25,7 @@ from sklearn.isotonic import IsotonicRegression
 
 logger = logging.getLogger(__name__)
 
-MIN_SAMPLES_FOR_CALIBRATION = 100
+MIN_SAMPLES_FOR_CALIBRATION = 20
 
 
 @dataclass

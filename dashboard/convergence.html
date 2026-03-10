@@ -1,0 +1,652 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>AetherBot - Convergence</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>%E2%9A%A1</text></svg>">
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3"></script>
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --bg-canvas:#0d1117;--bg-card:#161b22;--bg-card-alt:#1c2128;
+    --border:#30363d;--border-light:#484f58;
+    --text-primary:#e6edf3;--text-secondary:#8b949e;--text-muted:#6e7681;
+    --accent:#58a6ff;--green:#3fb950;--red:#f85149;--yellow:#d29922;--orange:#db6d28;
+    --purple:#a371f7;--pink:#f778ba;
+    --radius:12px;--radius-sm:8px;--shadow:0 1px 3px rgba(0,0,0,.4);
+  }
+  html{font-size:16px;-webkit-text-size-adjust:100%}
+  body{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+    background:var(--bg-canvas);color:var(--text-primary);line-height:1.6;min-height:100vh;overflow-x:hidden}
+  .container{max-width:1400px;margin:0 auto;padding:12px}
+  @media(min-width:768px){.container{padding:24px 32px}}
+
+  .header{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;padding:16px 0 12px;border-bottom:1px solid var(--border);margin-bottom:20px}
+  .header h1{font-size:1.15rem;font-weight:700;display:flex;align-items:center;gap:6px}
+  .header h1 span{font-size:1.3rem}
+  .header-right{display:flex;align-items:center;gap:12px}
+  .header-link{color:var(--accent);text-decoration:none;font-size:.8rem}
+  .header-link:hover{text-decoration:underline}
+
+  .card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:16px;box-shadow:var(--shadow)}
+  .card-title{font-size:.9rem;font-weight:700;margin-bottom:12px;color:var(--text-primary)}
+
+  .controls-bar{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:14px 16px}
+  .controls-bar label{font-size:.75rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.04em;font-weight:600}
+  .controls-bar select,.controls-bar input[type="date"]{
+    background:var(--bg-canvas);border:1px solid var(--border);border-radius:6px;
+    color:var(--text-primary);padding:6px 10px;font-size:.82rem;cursor:pointer}
+  .controls-bar select:focus,.controls-bar input:focus{border-color:var(--accent);outline:none}
+  .controls-bar .refresh-btn{background:var(--bg-card-alt);border:1px solid var(--border);border-radius:6px;color:var(--text-primary);padding:6px 12px;font-size:.78rem;cursor:pointer;transition:border-color .2s}
+  .controls-bar .refresh-btn:hover{border-color:var(--accent)}
+
+  /* Playback bar */
+  .playback-bar{display:flex;align-items:center;gap:12px;padding:10px 16px;border-top:1px solid var(--border)}
+  .playback-bar button{background:var(--bg-card-alt);border:1px solid var(--border);border-radius:6px;color:var(--text-primary);padding:5px 14px;font-size:.8rem;cursor:pointer}
+  .playback-bar button:hover{border-color:var(--accent)}
+  .playback-bar input[type="range"]{flex:1;accent-color:var(--accent);height:6px}
+  .playback-time{font-size:.78rem;color:var(--text-secondary);min-width:140px;text-align:right}
+
+  /* Split layout */
+  .split-grid{display:grid;grid-template-columns:1fr;gap:16px}
+  @media(min-width:900px){.split-grid{grid-template-columns:3fr 2fr}}
+
+  .chart-container{position:relative;width:100%;min-height:360px}
+  .chart-container canvas{width:100%!important}
+
+  /* Stat cards row */
+  .stat-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:16px}
+  .stat-card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px;text-align:center}
+  .stat-card .value{font-size:1.5rem;font-weight:700;color:var(--accent)}
+  .stat-card .label{font-size:.68rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin-top:2px}
+  .stat-card .value.green{color:var(--green)}
+  .stat-card .value.red{color:var(--red)}
+  .stat-card .value.orange{color:var(--orange)}
+
+  .empty-msg{color:var(--text-muted);font-size:.85rem;text-align:center;padding:40px 20px}
+  .auto-refresh-label{font-size:.68rem;color:var(--text-muted)}
+</style>
+</head>
+<body>
+<div class="container">
+
+  <header class="header">
+    <div class="header-left">
+      <h1><span>&#9889;</span> AetherBot &mdash; Convergence</h1>
+    </div>
+    <div class="header-right">
+      <a href="/" class="header-link">&larr; Dashboard</a>
+      <a href="/tracker" class="header-link">Tracker</a>
+      <a href="/math" class="header-link">Math</a>
+      <a href="/strategy-lab" class="header-link">Strategy Lab</a>
+      <a href="/evolution" class="header-link">Evolution</a>
+    </div>
+  </header>
+
+  <!-- Controls -->
+  <div class="card">
+    <div class="controls-bar">
+      <div>
+        <label>City</label><br>
+        <select id="city-select">
+          <option value="NYC">NYC (Central Park)</option>
+          <option value="Chicago">Chicago (Midway)</option>
+          <option value="Miami">Miami (MIA)</option>
+          <option value="LA">LA (LAX)</option>
+          <option value="Denver">Denver (DEN)</option>
+        </select>
+      </div>
+      <div>
+        <label>Date</label><br>
+        <input type="date" id="date-input">
+      </div>
+      <div>
+        <button class="refresh-btn" onclick="loadAll(true)">Refresh</button>
+        <br><span class="auto-refresh-label" id="auto-label"></span>
+      </div>
+    </div>
+    <div class="playback-bar">
+      <button id="play-btn" onclick="togglePlayback()">Play</button>
+      <input type="range" id="playback-slider" min="0" max="0" value="0" oninput="onSliderChange(parseInt(this.value))">
+      <span class="playback-time" id="playback-time">--</span>
+    </div>
+  </div>
+
+  <!-- Stat cards -->
+  <div class="stat-row">
+    <div class="stat-card"><div class="value" id="stat-current">--</div><div class="label">Current Temp</div></div>
+    <div class="stat-card"><div class="value red" id="stat-max">--</div><div class="label">Running High</div></div>
+    <div class="stat-card"><div class="value orange" id="stat-ensemble">--</div><div class="label">Ensemble Mean</div></div>
+    <div class="stat-card"><div class="value orange" id="stat-hrrr">--</div><div class="label">HRRR Max</div></div>
+    <div class="stat-card"><div class="value" id="stat-snapshots">--</div><div class="label">Signal Updates</div></div>
+  </div>
+
+  <!-- Split: temp chart + distribution chart -->
+  <div class="split-grid">
+    <div class="card">
+      <div class="card-title">Temperature vs Time of Day</div>
+      <div class="chart-container">
+        <canvas id="temp-chart"></canvas>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Bracket Probability Distribution</div>
+      <div class="chart-container">
+        <canvas id="dist-chart"></canvas>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+/* ============================================================
+   Convergence Dashboard — AetherBot
+   ============================================================ */
+
+var $ = function(id) { return document.getElementById(id); };
+
+// State
+var allObservations = [];
+var allSnapshots = [];
+var bracketDefs = [];
+var forecastData = null;
+var currentSnapshotIndex = 0;
+var playbackTimer = null;
+var autoRefreshTimer = null;
+
+var tempChart = null;
+var distChart = null;
+
+// ---------------- Init ----------------
+
+function init() {
+  // Default date = today
+  var today = new Date().toISOString().slice(0, 10);
+  $('date-input').value = today;
+
+  $('city-select').addEventListener('change', function() { loadAll(true); });
+  $('date-input').addEventListener('change', function() { loadAll(true); });
+
+  loadAll(true);
+}
+
+function getCity() { return $('city-select').value; }
+function getDate() { return $('date-input').value; }
+function isToday() { return getDate() === new Date().toISOString().slice(0, 10); }
+
+// ---------------- Data loading ----------------
+
+async function safeFetch(url) {
+  try {
+    var r = await fetch(url);
+    if (!r.ok) return {};
+    return await r.json();
+  } catch(e) { return {}; }
+}
+
+async function loadAll(pinToEnd) {
+  var city = getCity();
+  var dt = getDate();
+  var q = '?city=' + encodeURIComponent(city) + '&date=' + encodeURIComponent(dt);
+
+  var [obsData, fcData, distData] = await Promise.all([
+    safeFetch('/api/convergence/observations' + q),
+    safeFetch('/api/convergence/forecasts' + q),
+    safeFetch('/api/convergence/distribution' + q),
+  ]);
+
+  allObservations = obsData.observations || [];
+  forecastData = fcData;
+  bracketDefs = distData.brackets || [];
+  allSnapshots = distData.snapshots || [];
+
+  // Update stat cards
+  updateStats(obsData, fcData);
+
+  // Build charts
+  buildTempChart();
+  buildDistChart();
+
+  // Set up slider
+  var slider = $('playback-slider');
+  slider.max = Math.max(0, allSnapshots.length - 1);
+  if (pinToEnd) {
+    slider.value = slider.max;
+    currentSnapshotIndex = parseInt(slider.max);
+  }
+  onSliderChange(currentSnapshotIndex);
+
+  // Auto-refresh for today
+  if (isToday()) {
+    startAutoRefresh();
+    $('auto-label').textContent = 'Auto-refresh: 30s';
+  } else {
+    stopAutoRefresh();
+    $('auto-label').textContent = '';
+  }
+}
+
+function updateStats(obsData, fcData) {
+  var maxTemp = obsData.running_max;
+  var currentTemp = allObservations.length > 0 ? allObservations[allObservations.length - 1].temp_f : null;
+
+  $('stat-current').textContent = currentTemp != null ? currentTemp.toFixed(1) + '\u00b0F' : '--';
+  $('stat-max').textContent = maxTemp != null ? maxTemp.toFixed(1) + '\u00b0F' : '--';
+  $('stat-snapshots').textContent = allSnapshots.length;
+
+  if (fcData && fcData.ensemble) {
+    $('stat-ensemble').textContent = fcData.ensemble.mean + '\u00b0F';
+  } else {
+    $('stat-ensemble').textContent = '--';
+  }
+
+  if (fcData && fcData.hrrr) {
+    $('stat-hrrr').textContent = fcData.hrrr.max_f.toFixed(1) + '\u00b0F';
+  } else {
+    $('stat-hrrr').textContent = '--';
+  }
+}
+
+// ---------------- Temperature Chart ----------------
+
+function buildTempChart() {
+  var ctx = $('temp-chart').getContext('2d');
+  if (tempChart) tempChart.destroy();
+
+  var datasets = [];
+
+  // 1. Actual temperature line
+  var obsPoints = allObservations.map(function(o) {
+    return { x: new Date(o.t), y: o.temp_f };
+  });
+  datasets.push({
+    label: 'Actual Temperature',
+    data: obsPoints,
+    borderColor: '#58a6ff',
+    backgroundColor: 'rgba(88,166,255,0.1)',
+    borderWidth: 2.5,
+    pointRadius: 2,
+    pointBackgroundColor: '#58a6ff',
+    fill: false,
+    tension: 0.3,
+    order: 1,
+  });
+
+  // Determine x-axis range (observation day: roughly 4AM-midnight local)
+  var dt = getDate();
+  var xMin = new Date(dt + 'T10:00:00Z'); // ~5AM ET
+  var xMax = new Date(dt + 'T23:59:59Z');
+  // Extend if we have observations outside this range
+  if (obsPoints.length > 0) {
+    var firstObs = obsPoints[0].x;
+    var lastObs = obsPoints[obsPoints.length - 1].x;
+    if (firstObs < xMin) xMin = firstObs;
+    if (lastObs > xMax) xMax = lastObs;
+  }
+
+  // 2. Ensemble band (P10-P90 as horizontal fill)
+  if (forecastData && forecastData.ensemble) {
+    var ens = forecastData.ensemble;
+    var bandTop = [{x: xMin, y: ens.p90}, {x: xMax, y: ens.p90}];
+    var bandBot = [{x: xMin, y: ens.p10}, {x: xMax, y: ens.p10}];
+
+    datasets.push({
+      label: 'Ensemble P90',
+      data: bandTop,
+      borderColor: 'transparent',
+      backgroundColor: 'rgba(139,148,158,0.12)',
+      fill: '+1',
+      pointRadius: 0,
+      order: 5,
+    });
+    datasets.push({
+      label: 'Ensemble P10',
+      data: bandBot,
+      borderColor: 'rgba(139,148,158,0.25)',
+      borderDash: [4, 4],
+      borderWidth: 1,
+      backgroundColor: 'transparent',
+      fill: false,
+      pointRadius: 0,
+      order: 5,
+    });
+
+    // Min-max dashed lines
+    datasets.push({
+      label: 'Ensemble Max',
+      data: [{x: xMin, y: ens.max}, {x: xMax, y: ens.max}],
+      borderColor: 'rgba(139,148,158,0.18)',
+      borderDash: [2, 4],
+      borderWidth: 1,
+      fill: false,
+      pointRadius: 0,
+      order: 6,
+    });
+    datasets.push({
+      label: 'Ensemble Min',
+      data: [{x: xMin, y: ens.min}, {x: xMax, y: ens.min}],
+      borderColor: 'rgba(139,148,158,0.18)',
+      borderDash: [2, 4],
+      borderWidth: 1,
+      fill: false,
+      pointRadius: 0,
+      order: 6,
+    });
+  }
+
+  // 3. HRRR max horizontal line
+  if (forecastData && forecastData.hrrr) {
+    datasets.push({
+      label: 'HRRR Max',
+      data: [{x: xMin, y: forecastData.hrrr.max_f}, {x: xMax, y: forecastData.hrrr.max_f}],
+      borderColor: '#db6d28',
+      borderDash: [8, 4],
+      borderWidth: 1.5,
+      fill: false,
+      pointRadius: 0,
+      order: 4,
+    });
+  }
+
+  // Annotations for running max
+  var annotations = {};
+  if (allObservations.length > 0) {
+    var maxObs = null;
+    allObservations.forEach(function(o) {
+      if (!maxObs || o.temp_f > maxObs.temp_f) maxObs = o;
+    });
+    if (maxObs) {
+      annotations.runningMax = {
+        type: 'point',
+        xValue: new Date(maxObs.t),
+        yValue: maxObs.temp_f,
+        backgroundColor: '#f85149',
+        radius: 7,
+        borderColor: '#fff',
+        borderWidth: 2,
+      };
+      annotations.runningMaxLabel = {
+        type: 'label',
+        xValue: new Date(maxObs.t),
+        yValue: maxObs.temp_f,
+        content: 'HIGH: ' + maxObs.temp_f.toFixed(1) + '\u00b0F',
+        color: '#f85149',
+        font: { size: 11, weight: 'bold' },
+        position: 'end',
+        yAdjust: -18,
+      };
+    }
+  }
+
+  var range = computeSharedYRange();
+
+  tempChart = new Chart(ctx, {
+    type: 'line',
+    data: { datasets: datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'nearest', intersect: false },
+      scales: {
+        x: {
+          type: 'time',
+          time: { displayFormats: { hour: 'h a' }, unit: 'hour' },
+          title: { display: true, text: 'Time (UTC)', color: '#8b949e' },
+          grid: { color: 'rgba(48,54,61,0.5)' },
+          ticks: { color: '#8b949e', maxTicksLimit: 12 },
+          min: xMin,
+          max: xMax,
+        },
+        y: {
+          min: range.yMin,
+          max: range.yMax,
+          title: { display: true, text: 'Temperature (\u00b0F)', color: '#8b949e' },
+          grid: { color: 'rgba(48,54,61,0.5)' },
+          ticks: { color: '#8b949e', callback: function(v) { return v + '\u00b0'; } },
+        }
+      },
+      plugins: {
+        legend: { display: true, labels: { color: '#8b949e', boxWidth: 12, font: { size: 10 } } },
+        annotation: { annotations: annotations },
+      }
+    }
+  });
+}
+
+// ---------------- Distribution Chart ----------------
+
+function computeSharedYRange() {
+  // Compute y-axis range that encompasses both charts
+  var temps = allObservations.map(function(o) { return o.temp_f; });
+  if (forecastData && forecastData.ensemble) {
+    temps.push(forecastData.ensemble.min, forecastData.ensemble.max,
+               forecastData.ensemble.p10, forecastData.ensemble.p90);
+  }
+  if (forecastData && forecastData.hrrr) {
+    temps.push(forecastData.hrrr.max_f);
+  }
+  bracketDefs.forEach(function(b) { temps.push(b.sort_temp); });
+
+  if (temps.length === 0) return { yMin: 50, yMax: 90 };
+  var lo = Math.floor(Math.min.apply(null, temps) - 2);
+  var hi = Math.ceil(Math.max.apply(null, temps) + 2);
+  return { yMin: lo, yMax: hi };
+}
+
+function buildDistChart() {
+  var ctx = $('dist-chart').getContext('2d');
+  if (distChart) distChart.destroy();
+
+  if (bracketDefs.length === 0) {
+    distChart = null;
+    return;
+  }
+
+  var range = computeSharedYRange();
+
+  // Market prices from bracket defs (current YES = bracket probability)
+  var marketData = bracketDefs.map(function(b) {
+    return { x: (b.bracket_prob || 0) * 100, y: b.sort_temp };
+  });
+
+  // Model probabilities start empty — filled by onSliderChange
+  var modelData = bracketDefs.map(function(b) {
+    return { x: 0, y: b.sort_temp };
+  });
+
+  // Build bracket label lookup for y-axis ticks
+  var bracketLabelMap = {};
+  bracketDefs.forEach(function(b) {
+    bracketLabelMap[b.sort_temp] = b.label;
+  });
+
+  distChart = new Chart(ctx, {
+    type: 'bar',
+    data: {
+      datasets: [
+        {
+          label: 'Model Probability',
+          data: modelData,
+          backgroundColor: 'rgba(88,166,255,0.6)',
+          borderColor: '#58a6ff',
+          borderWidth: 1,
+          barThickness: 10,
+        },
+        {
+          label: 'Market Price',
+          data: marketData,
+          backgroundColor: 'rgba(219,109,40,0.5)',
+          borderColor: '#db6d28',
+          borderWidth: 1,
+          barThickness: 10,
+        }
+      ]
+    },
+    options: {
+      indexAxis: 'y',
+      responsive: true,
+      maintainAspectRatio: false,
+      scales: {
+        x: {
+          min: 0,
+          max: 100,
+          title: { display: true, text: 'Probability %', color: '#8b949e' },
+          grid: { color: 'rgba(48,54,61,0.5)' },
+          ticks: { color: '#8b949e', callback: function(v) { return v + '%'; } },
+        },
+        y: {
+          type: 'linear',
+          min: range.yMin,
+          max: range.yMax,
+          reverse: false,
+          title: { display: true, text: 'Temperature (\u00b0F)', color: '#8b949e' },
+          grid: { color: 'rgba(48,54,61,0.3)' },
+          ticks: {
+            color: '#e6edf3',
+            font: { size: 10 },
+            callback: function(value) {
+              if (bracketLabelMap[value]) return bracketLabelMap[value];
+              return value + '\u00b0';
+            },
+            // Show ticks at bracket positions + major gridlines
+            stepSize: 1,
+          },
+          afterBuildTicks: function(axis) {
+            // Replace auto ticks with bracket-position ticks
+            var bracketTicks = bracketDefs.map(function(b) { return { value: b.sort_temp }; });
+            if (bracketTicks.length > 0) axis.ticks = bracketTicks;
+          },
+        }
+      },
+      plugins: {
+        legend: { display: true, position: 'top', labels: { color: '#8b949e', boxWidth: 12, font: { size: 10 } } },
+        tooltip: {
+          callbacks: {
+            title: function(items) {
+              if (!items.length) return '';
+              var y = items[0].parsed.y;
+              return bracketLabelMap[y] || (y + '\u00b0F');
+            },
+            label: function(ctx) { return ctx.dataset.label + ': ' + ctx.parsed.x.toFixed(1) + '%'; }
+          }
+        }
+      }
+    }
+  });
+}
+
+// ---------------- Playback ----------------
+
+function onSliderChange(index) {
+  currentSnapshotIndex = index;
+
+  if (allSnapshots.length === 0) {
+    $('playback-time').textContent = 'No signal data';
+    return;
+  }
+
+  var snap = allSnapshots[Math.min(index, allSnapshots.length - 1)];
+  var cutoffTime = new Date(snap.t);
+
+  // Update timestamp display
+  $('playback-time').textContent = cutoffTime.toLocaleString('en-US', {
+    hour: 'numeric', minute: '2-digit', hour12: true,
+    month: 'short', day: 'numeric'
+  });
+
+  // Update temperature chart — filter observations up to cutoff
+  if (tempChart && tempChart.data.datasets.length > 0) {
+    var visibleObs = allObservations.filter(function(o) {
+      return new Date(o.t) <= cutoffTime;
+    });
+    tempChart.data.datasets[0].data = visibleObs.map(function(o) {
+      return { x: new Date(o.t), y: o.temp_f };
+    });
+
+    // Update running max annotation
+    var maxObs = null;
+    visibleObs.forEach(function(o) {
+      if (!maxObs || o.temp_f > maxObs.temp_f) maxObs = o;
+    });
+    if (maxObs && tempChart.options.plugins.annotation) {
+      var ann = tempChart.options.plugins.annotation.annotations;
+      if (ann.runningMax) {
+        ann.runningMax.xValue = new Date(maxObs.t);
+        ann.runningMax.yValue = maxObs.temp_f;
+      }
+      if (ann.runningMaxLabel) {
+        ann.runningMaxLabel.xValue = new Date(maxObs.t);
+        ann.runningMaxLabel.yValue = maxObs.temp_f;
+        ann.runningMaxLabel.content = 'HIGH: ' + maxObs.temp_f.toFixed(1) + '\u00b0F';
+      }
+    }
+
+    tempChart.update('none');
+  }
+
+  // Update distribution chart
+  if (distChart && bracketDefs.length > 0) {
+    var probs = snap.probabilities || {};
+    // Model probabilities (already normalized by backend)
+    distChart.data.datasets[0].data = bracketDefs.map(function(b) {
+      var p = probs[b.ticker];
+      return { x: p && p.model_prob != null ? p.model_prob * 100 : 0, y: b.sort_temp };
+    });
+    // Market prices — always use current bracket YES prices (sum ~100%)
+    distChart.data.datasets[1].data = bracketDefs.map(function(b) {
+      return { x: (b.bracket_prob || 0) * 100, y: b.sort_temp };
+    });
+    distChart.update('none');
+  }
+}
+
+function togglePlayback() {
+  if (playbackTimer) {
+    clearInterval(playbackTimer);
+    playbackTimer = null;
+    $('play-btn').textContent = 'Play';
+  } else {
+    if (allSnapshots.length === 0) return;
+    // If at end, restart from beginning
+    if (currentSnapshotIndex >= allSnapshots.length - 1) {
+      currentSnapshotIndex = 0;
+      $('playback-slider').value = 0;
+    }
+    $('play-btn').textContent = 'Pause';
+    playbackTimer = setInterval(function() {
+      if (currentSnapshotIndex < allSnapshots.length - 1) {
+        currentSnapshotIndex++;
+        $('playback-slider').value = currentSnapshotIndex;
+        onSliderChange(currentSnapshotIndex);
+      } else {
+        clearInterval(playbackTimer);
+        playbackTimer = null;
+        $('play-btn').textContent = 'Play';
+      }
+    }, 500);
+  }
+}
+
+// ---------------- Auto-refresh ----------------
+
+function startAutoRefresh() {
+  if (autoRefreshTimer) clearInterval(autoRefreshTimer);
+  autoRefreshTimer = setInterval(function() {
+    loadAll(true); // pin to end on auto-refresh
+  }, 30000);
+}
+
+function stopAutoRefresh() {
+  if (autoRefreshTimer) { clearInterval(autoRefreshTimer); autoRefreshTimer = null; }
+}
+
+// ---------------- Boot ----------------
+
+init();
+</script>
+</body>
+</html>

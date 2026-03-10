@@ -1,38 +1,35 @@
-mode: paper  # paper | live
-
+mode: live
 kalshi:
-  base_url: "https://api.elections.kalshi.com/trade-api/v2"
-  demo_url: "https://demo-api.kalshi.co/trade-api/v2"
-
+  base_url: https://api.elections.kalshi.com/trade-api/v2
+  demo_url: https://demo-api.kalshi.co/trade-api/v2
 data_sources:
-  ensemble_url: "https://ensemble-api.open-meteo.com/v1/ensemble"
-  ensemble_model: "gfs025"
+  ensemble_url: https://ensemble-api.open-meteo.com/v1/ensemble
+  ensemble_model: gfs025
   ensemble_members: 31
-  forecast_url: "https://api.open-meteo.com/v1/forecast"
-  hrrr_model: "ncep_hrrr_conus"
-  nws_base_url: "https://api.weather.gov"
-  nws_user_agent: "KalshiWeatherBot/1.0 (weather-bot@example.com)"
-  iem_cli_url: "https://mesonet.agron.iastate.edu/json/cli.py"
-  historical_archive_url: "https://archive-api.open-meteo.com/v1/archive"
-
+  forecast_url: https://api.open-meteo.com/v1/forecast
+  hrrr_model: ncep_hrrr_conus
+  nws_base_url: https://api.weather.gov
+  nws_user_agent: KalshiWeatherBot/1.0 (weather-bot@example.com)
+  iem_cli_url: https://mesonet.agron.iastate.edu/json/cli.py
+  historical_archive_url: https://archive-api.open-meteo.com/v1/archive
 strategy:
   edge_threshold: 0.08
   min_edge_hrrr_confirm: 0.06
   min_model_prob: 0.55
-  fractional_kelly: 0.15
-  max_position_pct: 0.10
-  max_position_dollars: 1000
-  daily_loss_limit: 300
-  max_concurrent_positions: 20
-  max_positions_per_city: 6
-  max_positions_per_date: 4
+  fractional_kelly: 0.1
+  max_position_pct: 0.05
+  max_position_dollars: 1.0
+  daily_loss_limit: 15.0
+  daily_spend_limit: 1.0
+  max_concurrent_positions: 1
+  max_positions_per_city: 3
+  max_positions_per_date: 10
   min_contracts: 1
   max_price: 0.92
   min_price: 0.08
   max_lead_hours: 72
-
 model_weights:
-  gfs_ensemble: 0.60
+  gfs_ensemble: 0.6
   hrrr: 0.25
   nws: 0.15
   hrrr_weight_by_lead_hours:
@@ -41,28 +38,34 @@ model_weights:
     12: 0.25
     24: 0.15
     48: 0.05
-
+  gfs_weight_by_lead_hours:
+    0: 0.15
+    6: 0.25
+    12: 0.35
+    18: 0.4
+    24: 0.5
+    48: 0.6
 paper_trading:
   initial_bankroll: 10000
-
 scheduler:
-  # Smart data fetching — checks every N minutes, only fetches when new model data exists
-  smart_fetch_enabled: true
-  smart_fetch_check_minutes: 10
-  gfs_availability_lag_hours: 4.5    # GFS data available ~4.5h after run start
-  hrrr_availability_lag_hours: 1.0   # HRRR data available ~1h after run start
-
-  # Market scanning
+  smart_fetch_enabled: false
+  smart_fetch_check_minutes: 5
+  gfs_availability_lag_hours: 4.5
+  hrrr_availability_lag_hours: 1.0
   market_scan_interval_minutes: 5
   market_discovery_interval_minutes: 30
-
-  # Price discovery — fast-poll newly listed contracts
-  price_discovery_window_hours: 2    # How long a contract is "new"
-  price_discovery_scan_minutes: 2    # Poll frequency during window
-
-  # Settlement
+  price_discovery_window_hours: 2
+  price_discovery_scan_minutes: 2
   settlement_check_hour: 11
   settlement_check_minute: 15
-
+email:
+  enabled: true
+  recipient: chriswiegand74@gmail.com
+  smtp_host: smtp.gmail.com
+  smtp_port: 587
 database:
-  path: "data/weather_bot.db"
+  path: data/weather_bot.db
+archival:
+  enabled: true
+  archive_dir: data/archives
+  retention_days: 730

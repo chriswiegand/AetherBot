@@ -46,12 +46,35 @@ STATIC_DIR = Path(__file__).resolve().parent  # dashboard/
 INITIAL_BANKROLL = 10_000.0
 
 # ---------------------------------------------------------------------------
+# Kalshi client (lazy-loaded, only in live mode)
+# ---------------------------------------------------------------------------
+_kalshi_client = None
+_kalshi_lock = threading.Lock()
+
+
+def _get_kalshi_balance() -> float | None:
+    """Fetch real Kalshi balance. Returns None if not in live mode or on error."""
+    global _kalshi_client
+    try:
+        settings = load_settings()
+        if settings.mode != "live":
+            return None
+        with _kalshi_lock:
+            if _kalshi_client is None:
+                from src.data.kalshi_client import KalshiClient
+                _kalshi_client = KalshiClient(settings)
+            return _kalshi_client.get_balance()
+    except Exception as e:
+        logger.warning("Failed to fetch Kalshi balance: %s", e)
+        return None
+
+# ---------------------------------------------------------------------------
 # Direct-fetch infrastructure (dashboard calls fetchers without the bot)
 # ---------------------------------------------------------------------------
 
-_refresh_locks = {s: threading.Lock() for s in ("gfs", "hrrr", "nws")}
+_refresh_locks = {s: threading.Lock() for s in ("gfs", "hrrr", "nws", "markets")}
 _refresh_status: dict[str, dict] = {
-    s: {"running": False, "last_result": None} for s in ("gfs", "hrrr", "nws")
+    s: {"running": False, "last_result": None} for s in ("gfs", "hrrr", "nws", "markets")
 }
 
 # Optimization job state for async (SSE) optimization runs
@@ -116,6 +139,21 @@ def _do_direct_fetch(source: str):
                         logger.error("NWS fetch failed for %s: %s", city_name, e)
             finally:
                 client.close()
+
+        elif source == "markets":
+            try:
+                from src.data.kalshi_client import KalshiClient
+                from src.data.kalshi_markets import KalshiMarketDiscovery
+                kalshi = KalshiClient(settings)
+                discovery = KalshiMarketDiscovery(kalshi)
+                markets = discovery.discover_active_markets(cities)
+                discovery.store_markets(markets)
+                markets = discovery.refresh_prices(markets)
+                total_records = len(markets)
+                kalshi.close()
+            except Exception as e:
+                errors.append(f"markets: {e}")
+                logger.error("Market refresh failed: %s", e)
 
         _refresh_status[source]["last_result"] = {
             "records": total_records,
@@ -209,6 +247,12 @@ def tracker_page():
     return send_from_directory(STATIC_DIR, "tracker.html")
 
 
+@app.route("/convergence")
+def convergence_page():
+    """Serve the Temperature + Probability Convergence page."""
+    return send_from_directory(STATIC_DIR, "convergence.html")
+
+
 @app.route("/<path:filename>")
 def static_files(filename):
     """Serve other static assets (CSS, JS, images) from dashboard/."""
@@ -253,8 +297,12 @@ def api_status():
         )
         open_cost = cur.fetchone()["open_cost"]
 
-        # Bankroll = initial + settled PnL - open trade costs
-        bankroll = INITIAL_BANKROLL + total_pnl - open_cost
+        # Bankroll: real Kalshi balance in live mode, computed in paper mode
+        live_balance = _get_kalshi_balance()
+        if live_balance is not None:
+            bankroll = live_balance
+        else:
+            bankroll = INITIAL_BANKROLL + total_pnl - open_cost
 
         # Open positions count
         cur.execute("SELECT COUNT(*) AS cnt FROM trades WHERE status = 'filled'")
@@ -314,11 +362,13 @@ def api_positions():
         cur = conn.cursor()
 
         # 1a. Main query: trades JOIN kalshi_markets for current prices
+        #     Use COALESCE(fill_price, price) so actual fill price takes priority
         cur.execute(
             """
             SELECT
                 t.market_ticker, t.side, t.contracts,
-                t.price AS entry_price, t.total_cost, t.city,
+                COALESCE(t.fill_price, t.price) AS entry_price,
+                t.total_cost, t.city,
                 t.target_date, t.edge AS edge_at_entry,
                 t.model_prob, t.created_at,
                 km.yes_price AS current_yes_price,
@@ -416,9 +466,9 @@ def api_positions():
                     price_move = current_yes - entry_price
                 else:
                     current_price = 1.0 - current_yes
-                    cost = (1.0 - entry_price) * contracts
+                    cost = entry_price * contracts  # entry_price IS the NO price paid
                     current_value = (1.0 - current_yes) * contracts
-                    price_move = entry_price - current_yes  # YES drop = NO gain
+                    price_move = (1.0 - current_yes) - entry_price  # NO price change
 
                 unrealized_pnl = round(current_value - cost, 2)
                 unrealized_pnl_pct = (
@@ -466,12 +516,9 @@ def api_positions():
                 current_price = round(current_price, 4) if current_price else None
                 price_move = round(price_move, 4) if price_move is not None else None
 
-            # Side-adjusted entry price for display consistency
-            display_entry = (
-                round(entry_price, 4)
-                if side == "yes"
-                else round(1.0 - entry_price, 4)
-            )
+            # entry_price is already in the traded side's denomination
+            # (YES price for YES trades, NO price for NO trades)
+            display_entry = round(entry_price, 4)
 
             positions.append(
                 {
@@ -518,7 +565,7 @@ def api_recent_trades():
                 market_ticker,
                 side,
                 contracts,
-                price,
+                COALESCE(fill_price, price) AS price,
                 pnl,
                 status,
                 edge,
@@ -657,12 +704,11 @@ def api_daily_pnl():
 
 @app.route("/api/signals/latest")
 def api_latest_signals():
-    """Most recent signal per market_ticker (latest computed_at)."""
+    """Most recent signal per market_ticker with Kelly-sized recommendation."""
     try:
         conn = get_db()
         cur = conn.cursor()
 
-        # Use a window function to pick the latest signal per market_ticker
         cur.execute(
             """
             SELECT
@@ -675,7 +721,9 @@ def api_latest_signals():
                 s.raw_edge AS edge,
                 s.market_yes_price,
                 s.lead_hours,
-                s.computed_at
+                s.computed_at,
+                km.yes_price AS yes_bid,
+                km.no_price AS no_bid
             FROM signals s
             INNER JOIN (
                 SELECT market_ticker, MAX(computed_at) AS max_computed
@@ -684,14 +732,70 @@ def api_latest_signals():
             ) latest
                 ON s.market_ticker = latest.market_ticker
                AND s.computed_at = latest.max_computed
-            ORDER BY s.target_date ASC, s.city ASC
+            LEFT JOIN kalshi_markets km
+                ON km.market_ticker = s.market_ticker
+            ORDER BY ABS(s.raw_edge) DESC, s.target_date ASC, s.city ASC
             """
         )
         rows = cur.fetchall()
         conn.close()
 
+        # Compute Kelly sizing for each signal
+        settings = load_settings()
+        from src.strategy.kelly_sizer import KellySizer
+        from src.strategy.edge_detector import TradeSignal
+        sizer = KellySizer(settings.strategy)
+        live_balance = _get_kalshi_balance()
+        bankroll = live_balance if live_balance is not None else INITIAL_BANKROLL
+
         signals = []
         for r in rows:
+            model_prob = r["calibrated_prob"] or r["blended_prob"] or r["ensemble_prob"]
+            market_price = r["market_yes_price"]
+            edge = r["edge"]
+
+            # Determine side
+            if model_prob is not None and market_price is not None:
+                side = "yes" if (model_prob - market_price) > 0 else "no"
+            else:
+                side = "yes"
+
+            # Build a TradeSignal for the sizer
+            rec = {"side": side, "contracts": 0, "price_cents": 0,
+                   "total_cost": 0, "kelly": 0, "tradeable": False}
+            if model_prob and market_price and edge:
+                try:
+                    sig = TradeSignal(
+                        market_ticker=r["market_ticker"],
+                        city=r["city"] or "",
+                        target_date=r["target_date"] or "",
+                        side=side,
+                        model_prob=model_prob,
+                        market_price=market_price,
+                        edge=edge,
+                        abs_edge=abs(edge),
+                        lead_hours=r["lead_hours"] or 0,
+                        confidence="medium",
+                    )
+                    pos = sizer.calculate_position_size(sig, bankroll)
+                    rec = {
+                        "side": side,
+                        "contracts": pos.contracts,
+                        "price_cents": pos.price_cents,
+                        "total_cost": round(pos.total_cost, 2),
+                        "kelly": round(pos.kelly_fraction, 4),
+                        "tradeable": pos.contracts > 0 and abs(edge) >= settings.strategy.edge_threshold,
+                    }
+                except Exception:
+                    pass
+
+            # Bid/ask: yes_bid is what you get buying YES, no_bid for NO
+            yes_bid = r["yes_bid"]
+            no_bid = r["no_bid"]
+            # yes_ask = complement of no_bid (what you pay to buy YES)
+            yes_ask = round(1.0 - no_bid, 2) if no_bid and no_bid > 0 else None
+            no_ask = round(1.0 - yes_bid, 2) if yes_bid and yes_bid > 0 else None
+
             signals.append({
                 "market_ticker": r["market_ticker"],
                 "city": r["city"],
@@ -699,9 +803,14 @@ def api_latest_signals():
                 "ensemble_prob": r["ensemble_prob"],
                 "blended_prob": r["blended_prob"],
                 "calibrated_prob": r["calibrated_prob"],
-                "edge": r["edge"],
-                "market_price": r["market_yes_price"],
+                "edge": edge,
+                "market_price": market_price,
                 "lead_hours": r["lead_hours"],
+                "yes_bid": yes_bid,
+                "yes_ask": yes_ask,
+                "no_bid": no_bid,
+                "no_ask": no_ask,
+                "rec": rec,
             })
 
         return jsonify(signals)
@@ -767,6 +876,26 @@ STRATEGY_FLOAT_FIELDS = {
 STRATEGY_INT_FIELDS = {
     "max_concurrent_positions", "max_positions_per_city", "max_positions_per_date",
 }
+
+
+def _ensure_hourly_observations_table(conn):
+    """Create hourly_observations table if it doesn't exist."""
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS hourly_observations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            city TEXT NOT NULL,
+            station TEXT NOT NULL,
+            observed_at TEXT NOT NULL,
+            temperature_f REAL,
+            description TEXT,
+            fetched_at TEXT NOT NULL,
+            UNIQUE(station, observed_at)
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_hourly_obs_city_time
+        ON hourly_observations(city, observed_at)
+    """)
 
 
 def _ensure_strategies_table(conn):
@@ -1800,7 +1929,7 @@ def api_manual_refresh(source):
     Calls the fetchers for all 5 cities — no bot process needed.
     Returns immediately; poll /api/refresh/<source>/status for progress.
     """
-    valid_sources = {"gfs", "hrrr", "nws"}
+    valid_sources = {"gfs", "hrrr", "nws", "markets"}
     if source not in valid_sources:
         return jsonify({"error": f"Invalid source. Use one of: {valid_sources}"}), 400
 
@@ -1818,10 +1947,55 @@ def api_manual_refresh(source):
     return jsonify({"status": "started", "source": source})
 
 
+@app.route("/api/refresh/all", methods=["POST"])
+def api_refresh_all():
+    """Trigger refresh of ALL data sources + markets in parallel.
+
+    Starts background threads for each source. Returns immediately.
+    Poll /api/refresh/all/status for aggregate progress.
+    """
+    started = []
+    already_running = []
+    for source in ("gfs", "hrrr", "nws", "markets"):
+        if _refresh_status[source]["running"]:
+            already_running.append(source)
+            continue
+        thread = threading.Thread(
+            target=_do_direct_fetch,
+            args=(source,),
+            daemon=True,
+            name=f"refresh-{source}",
+        )
+        thread.start()
+        started.append(source)
+
+    return jsonify({
+        "status": "started",
+        "started": started,
+        "already_running": already_running,
+    })
+
+
+@app.route("/api/refresh/all/status")
+def api_refresh_all_status():
+    """Aggregate status for all refresh sources."""
+    sources = {}
+    any_running = False
+    for source in ("gfs", "hrrr", "nws", "markets"):
+        running = _refresh_status[source]["running"]
+        if running:
+            any_running = True
+        sources[source] = {
+            "running": running,
+            "last_result": _refresh_status[source]["last_result"],
+        }
+    return jsonify({"running": any_running, "sources": sources})
+
+
 @app.route("/api/refresh/<source>/status")
 def api_refresh_status(source):
     """Check status of a running or completed refresh."""
-    valid_sources = {"gfs", "hrrr", "nws"}
+    valid_sources = {"gfs", "hrrr", "nws", "markets"}
     if source not in valid_sources:
         return jsonify({"error": f"Invalid source"}), 400
 
@@ -2245,12 +2419,16 @@ def api_math_kelly_sizing():
         )
         daily_pnl = cur.fetchone()["total"]
 
-        # Current bankroll
-        cur.execute("SELECT COALESCE(SUM(total_cost), 0) AS spent FROM trades WHERE status='filled' AND pnl IS NULL")
-        open_cost = cur.fetchone()["spent"]
-        cur.execute("SELECT COALESCE(SUM(pnl), 0) AS realized FROM trades WHERE pnl IS NOT NULL")
-        realized = cur.fetchone()["realized"]
-        bankroll = round(INITIAL_BANKROLL + realized - open_cost, 2)
+        # Current bankroll: real Kalshi balance in live mode
+        live_balance = _get_kalshi_balance()
+        if live_balance is not None:
+            bankroll = round(live_balance, 2)
+        else:
+            cur.execute("SELECT COALESCE(SUM(total_cost), 0) AS spent FROM trades WHERE status='filled' AND pnl IS NULL")
+            open_cost = cur.fetchone()["spent"]
+            cur.execute("SELECT COALESCE(SUM(pnl), 0) AS realized FROM trades WHERE pnl IS NOT NULL")
+            realized = cur.fetchone()["realized"]
+            bankroll = round(INITIAL_BANKROLL + realized - open_cost, 2)
 
         risk_checks = {
             "daily_loss_limit": {"current": round(daily_pnl, 2), "limit": 300, "ok": daily_pnl > -300},
@@ -2689,6 +2867,1193 @@ def api_tracker_detail(market_ticker):
 
 
 # ---------------------------------------------------------------------------
+# Manual trade placement from dashboard
+# ---------------------------------------------------------------------------
+
+@app.route("/api/trade/place", methods=["POST"])
+def api_place_trade():
+    """Place a live trade on Kalshi from the dashboard.
+
+    Expects JSON: {market_ticker, city, target_date, side, contracts, price_cents,
+                   model_prob, market_price, edge}
+    """
+    try:
+        data = request.get_json(force=True)
+        required = ["market_ticker", "side", "contracts", "price_cents"]
+        missing = [k for k in required if k not in data]
+        if missing:
+            return jsonify({"error": f"Missing fields: {missing}"}), 400
+
+        settings = load_settings()
+        if settings.mode != "live":
+            return jsonify({"error": "Bot is in paper mode — switch to live first"}), 400
+
+        contracts = int(data["contracts"])
+        price_cents = int(data["price_cents"])
+        side = data["side"]
+
+        if contracts <= 0:
+            return jsonify({"error": "Contracts must be > 0"}), 400
+        if price_cents < 1 or price_cents > 99:
+            return jsonify({"error": "Price must be 1-99 cents"}), 400
+        if side not in ("yes", "no"):
+            return jsonify({"error": "Side must be 'yes' or 'no'"}), 400
+
+        total_cost = contracts * price_cents / 100.0
+
+        # Risk check
+        from src.strategy.risk_manager import RiskManager, PortfolioState
+        rm = RiskManager(settings.strategy)
+        live_balance = _get_kalshi_balance()
+        if live_balance is None:
+            return jsonify({"error": "Cannot fetch Kalshi balance"}), 500
+        portfolio = rm.get_portfolio_state(live_balance, mode="live")
+        check = rm.check_trade_allowed(
+            city=data.get("city", ""),
+            target_date=data.get("target_date", ""),
+            total_cost=total_cost,
+            portfolio=portfolio,
+        )
+        if not check.allowed:
+            return jsonify({"error": f"Risk check failed: {check.reason}"}), 400
+
+        # Place order
+        from src.data.kalshi_client import KalshiClient
+        from src.data.db import get_session, init_db
+        from src.data.models import Trade
+        import uuid as _uuid
+
+        init_db(settings)
+
+        with _kalshi_lock:
+            global _kalshi_client
+            if _kalshi_client is None:
+                _kalshi_client = KalshiClient(settings)
+            client = _kalshi_client
+
+        order = client.create_order(
+            ticker=data["market_ticker"],
+            side=side,
+            action="buy",
+            order_type="limit",
+            yes_price=price_cents if side == "yes" else None,
+            no_price=price_cents if side == "no" else None,
+            count=contracts,
+        )
+
+        # Record in DB
+        now = datetime.now(timezone.utc).isoformat()
+        session = get_session()
+        try:
+            trade = Trade(
+                trade_id=str(_uuid.uuid4()),
+                mode="live",
+                market_ticker=data["market_ticker"],
+                city=data.get("city", ""),
+                target_date=data.get("target_date", ""),
+                side=side,
+                direction="buy",
+                contracts=contracts,
+                price=price_cents / 100.0,
+                total_cost=total_cost,
+                model_prob=data.get("model_prob"),
+                market_price=data.get("market_price"),
+                edge=data.get("edge"),
+                kelly_fraction=data.get("kelly"),
+                kalshi_order_id=order.order_id,
+                status=order.status or "pending",
+                created_at=now,
+                updated_at=now,
+            )
+            session.add(trade)
+            session.commit()
+            logger.info(
+                "DASHBOARD TRADE: %s %dx %s @ %dc (order=%s)",
+                side.upper(), contracts, data["market_ticker"],
+                price_cents, order.order_id
+            )
+            return jsonify({
+                "ok": True,
+                "order_id": order.order_id,
+                "status": order.status,
+                "side": side,
+                "contracts": contracts,
+                "price_cents": price_cents,
+                "total_cost": total_cost,
+            })
+        except Exception:
+            session.rollback()
+            raise
+        finally:
+            session.close()
+
+    except Exception as e:
+        logger.error("Dashboard trade failed: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Test Email API
+# ---------------------------------------------------------------------------
+
+@app.route("/api/email/test", methods=["POST"])
+def api_test_email():
+    """Send a test daily email report."""
+    try:
+        from src.monitoring.email_reporter import send_daily_email
+
+        settings = load_settings()
+        if not settings.email.enabled or not settings.email.app_password:
+            return jsonify({"error": "Email not configured. Set GMAIL_APP_PASSWORD in .env and email.enabled in settings.yaml"}), 400
+
+        live_balance = _get_kalshi_balance()
+        if live_balance is not None:
+            get_bankroll = lambda: live_balance
+        else:
+            get_bankroll = lambda: INITIAL_BANKROLL
+
+        send_daily_email(settings, get_bankroll=get_bankroll)
+        return jsonify({"ok": True, "recipient": settings.email.recipient})
+    except Exception as e:
+        logger.error("Test email failed: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Bracket Arbitrage API
+# ---------------------------------------------------------------------------
+
+@app.route("/api/arbitrage/scan")
+def api_arbitrage_scan():
+    """Scan for bracket arbitrage opportunities across all active events."""
+    try:
+        from src.strategy.arbitrage_scanner import scan_arbitrage
+        opportunities = scan_arbitrage()
+        return jsonify({
+            "opportunities": [
+                {
+                    "city": a.city,
+                    "target_date": a.target_date,
+                    "event_ticker": a.event_ticker,
+                    "n_brackets": a.n_brackets,
+                    "sum_yes_ask": round(a.sum_yes_ask, 4),
+                    "total_fees": round(a.total_fees, 4),
+                    "guaranteed_profit": round(a.guaranteed_profit, 4),
+                    "profitable": a.guaranteed_profit > 0,
+                    "brackets": a.brackets,
+                }
+                for a in opportunities
+            ],
+            "count": len(opportunities),
+            "profitable_count": sum(1 for a in opportunities if a.guaranteed_profit > 0),
+        })
+    except Exception as e:
+        logger.error("Arbitrage scan failed: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/arbitrage/sweep", methods=["POST"])
+def api_arbitrage_sweep():
+    """Execute an arbitrage sweep: buy NO on every bracket in an event.
+
+    Body: { "city": "NYC", "target_date": "2026-03-10", "contracts": 1 }
+    """
+    try:
+        settings = load_settings()
+        if settings.mode != "live":
+            return jsonify({"error": "Arbitrage sweep only available in live mode"}), 400
+
+        body = request.get_json() or {}
+        city = body.get("city")
+        target_date = body.get("target_date")
+        contracts = body.get("contracts", 1)
+
+        if not city or not target_date:
+            return jsonify({"error": "city and target_date required"}), 400
+        if contracts < 1 or contracts > 10:
+            return jsonify({"error": "contracts must be 1-10"}), 400
+
+        from src.strategy.arbitrage_scanner import scan_arbitrage, execute_sweep
+
+        # Find the specific opportunity
+        opportunities = scan_arbitrage()
+        arb = None
+        for a in opportunities:
+            if a.city == city and a.target_date == target_date:
+                arb = a
+                break
+
+        if arb is None:
+            return jsonify({"error": f"No bracket set found for {city} {target_date}"}), 404
+
+        if arb.guaranteed_profit <= 0:
+            return jsonify({
+                "error": f"No arbitrage opportunity — sum(YES)={arb.sum_yes_ask:.2%}, "
+                         f"need >{1.0 + arb.total_fees:.2%} for profit"
+            }), 400
+
+        # Execute the sweep
+        global _kalshi_client
+        with _kalshi_lock:
+            if _kalshi_client is None:
+                from src.data.kalshi_client import KalshiClient
+                _kalshi_client = KalshiClient(settings)
+            client = _kalshi_client
+
+        results = execute_sweep(client, arb, contracts=contracts)
+
+        return jsonify({
+            "ok": True,
+            "city": city,
+            "target_date": target_date,
+            "n_brackets": arb.n_brackets,
+            "contracts_per_bracket": contracts,
+            "guaranteed_profit_per_contract": round(arb.guaranteed_profit, 4),
+            "total_guaranteed_profit": round(arb.guaranteed_profit * contracts, 4),
+            "orders": results,
+        })
+
+    except Exception as e:
+        logger.error("Arbitrage sweep failed: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Convergence Dashboard API
+# ---------------------------------------------------------------------------
+
+@app.route("/api/convergence/observations")
+def api_convergence_observations():
+    """Hourly temperature observations for the convergence chart."""
+    city = request.args.get("city")
+    date_str = request.args.get("date")
+    if not city or not date_str:
+        return jsonify({"error": "city and date required"}), 400
+
+    try:
+        from datetime import date as date_type
+        from src.utils.time_utils import get_observation_window_utc
+        cities = load_cities()
+        city_cfg = cities.get(city)
+        if not city_cfg:
+            return jsonify({"error": f"Unknown city: {city}"}), 400
+
+        target = date_type.fromisoformat(date_str)
+        start_utc, end_utc = get_observation_window_utc(target, city_cfg.timezone)
+
+        conn = get_db()
+        rows = conn.execute(
+            """SELECT observed_at, temperature_f, description
+               FROM hourly_observations
+               WHERE city = ? AND observed_at >= ? AND observed_at < ?
+               ORDER BY observed_at ASC""",
+            (city, start_utc.isoformat(), end_utc.isoformat())
+        ).fetchall()
+        conn.close()
+
+        observations = [
+            {"t": r[0], "temp_f": r[1], "description": r[2]}
+            for r in rows if r[1] is not None
+        ]
+
+        running_max = None
+        running_max_time = None
+        for o in observations:
+            if running_max is None or o["temp_f"] > running_max:
+                running_max = o["temp_f"]
+                running_max_time = o["t"]
+
+        return jsonify({
+            "observations": observations,
+            "running_max": running_max,
+            "running_max_time": running_max_time,
+            "city": city,
+            "date": date_str,
+            "timezone": city_cfg.timezone,
+        })
+    except Exception as e:
+        logger.error("Convergence observations failed: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/convergence/forecasts")
+def api_convergence_forecasts():
+    """Ensemble spread and HRRR forecast for the convergence chart."""
+    city = request.args.get("city")
+    date_str = request.args.get("date")
+    if not city or not date_str:
+        return jsonify({"error": "city and date required"}), 400
+
+    try:
+        conn = get_db()
+
+        # Latest ensemble run — get all 31 member daily maxes
+        ens_rows = conn.execute(
+            """SELECT member, temperature_f, model_run_time
+               FROM ensemble_forecasts
+               WHERE city = ? AND valid_time LIKE ?
+                 AND model_run_time = (
+                   SELECT MAX(model_run_time) FROM ensemble_forecasts
+                   WHERE city = ? AND valid_time LIKE ?
+                 )
+               ORDER BY member ASC""",
+            (city, date_str + "%", city, date_str + "%")
+        ).fetchall()
+
+        ensemble_data = None
+        if ens_rows:
+            temps = [r[1] for r in ens_rows]
+            temps.sort()
+            n = len(temps)
+            p10_idx = max(0, int(n * 0.10))
+            p90_idx = min(n - 1, int(n * 0.90))
+            ensemble_data = {
+                "min": min(temps),
+                "max": max(temps),
+                "p10": temps[p10_idx],
+                "p90": temps[p90_idx],
+                "median": temps[n // 2],
+                "mean": round(sum(temps) / n, 1),
+                "members": temps,
+                "run_time": ens_rows[0][2],
+                "n_members": n,
+            }
+
+        # Latest HRRR daily max
+        hrrr_row = conn.execute(
+            """SELECT temperature_f, model_run_time
+               FROM hrrr_forecasts
+               WHERE city = ? AND valid_time LIKE ?
+               ORDER BY model_run_time DESC LIMIT 1""",
+            (city, date_str + "%")
+        ).fetchone()
+        conn.close()
+
+        hrrr_data = None
+        if hrrr_row:
+            hrrr_data = {
+                "max_f": hrrr_row[0],
+                "run_time": hrrr_row[1],
+            }
+
+        return jsonify({
+            "ensemble": ensemble_data,
+            "hrrr": hrrr_data,
+            "city": city,
+            "date": date_str,
+        })
+    except Exception as e:
+        logger.error("Convergence forecasts failed: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/convergence/distribution")
+def api_convergence_distribution():
+    """Probability distribution per bracket over time for playback."""
+    city = request.args.get("city")
+    date_str = request.args.get("date")
+    if not city or not date_str:
+        return jsonify({"error": "city and date required"}), 400
+
+    try:
+        conn = get_db()
+
+        # Bracket definitions
+        bracket_rows = conn.execute(
+            """SELECT market_ticker, bracket_low, bracket_high,
+                      is_above_contract, threshold_f, yes_price, no_price
+               FROM kalshi_markets
+               WHERE city = ? AND target_date = ?
+                 AND status IN ('open', 'active')
+               ORDER BY COALESCE(bracket_low, threshold_f - 1, -999) ASC""",
+            (city, date_str)
+        ).fetchall()
+
+        # Identify T (threshold) contracts to determine low-end vs high-end
+        t_thresholds = []
+        for r in bracket_rows:
+            ticker, bl, bh, is_above, thresh, yp, np_ = r
+            if is_above and bl is None and bh is None and thresh is not None:
+                t_thresholds.append(thresh)
+        t_thresholds.sort()
+        low_t = t_thresholds[0] if t_thresholds else None
+        high_t = t_thresholds[-1] if len(t_thresholds) > 1 else None
+
+        brackets = []
+        for r in bracket_rows:
+            ticker, bl, bh, is_above, thresh, yp, np_ = r
+
+            if is_above and bl is None and bh is None and thresh is not None:
+                if thresh == low_t:
+                    # Low-end bracket: "≤(threshold-1)°F"
+                    label = f"{int(thresh) - 1}\u00b0 or below"
+                    sort_temp = float(thresh) - 1.0
+                elif thresh == high_t:
+                    # High-end bracket: "≥(threshold+1)°F"
+                    label = f"{int(thresh) + 1}\u00b0 or above"
+                    sort_temp = float(thresh) + 1.0
+                else:
+                    label = f"T{int(thresh)}"
+                    sort_temp = float(thresh)
+            elif bl is not None and bh is not None:
+                label = f"{int(bl)}-{int(bh)}\u00b0F"
+                sort_temp = (bl + bh) / 2.0
+            elif bl is None and bh is not None:
+                label = f"\u2264{int(bh)}\u00b0F"
+                sort_temp = float(bh)
+            elif bl is not None and bh is None:
+                label = f"\u2265{int(bl)}\u00b0F"
+                sort_temp = float(bl)
+            else:
+                label = ticker
+                sort_temp = 0.0
+
+            brackets.append({
+                "ticker": ticker,
+                "label": label,
+                "sort_temp": sort_temp,
+                "bracket_prob": round(yp, 4) if yp else 0,
+                "bracket_low": bl,
+                "bracket_high": bh,
+                "is_above": bool(is_above),
+                "threshold": thresh,
+                "current_yes": yp,
+                "current_no": np_,
+            })
+
+        brackets.sort(key=lambda b: b["sort_temp"])
+
+        # Signal history — all snapshots for these markets
+        tickers = [b["ticker"] for b in brackets]
+        if not tickers:
+            conn.close()
+            return jsonify({"brackets": [], "snapshots": []})
+
+        placeholders = ",".join("?" for _ in tickers)
+        sig_rows = conn.execute(
+            f"""SELECT computed_at, market_ticker,
+                       COALESCE(calibrated_prob, blended_prob, ensemble_prob) as model_prob,
+                       market_yes_price
+                FROM signals
+                WHERE target_date = ? AND city = ?
+                  AND market_ticker IN ({placeholders})
+                ORDER BY computed_at ASC""",
+            (date_str, city, *tickers)
+        ).fetchall()
+        conn.close()
+
+        # Group by computed_at to create snapshots
+        from collections import OrderedDict
+        snapshot_map = OrderedDict()
+        for computed_at, ticker, model_prob, mkt_price in sig_rows:
+            if computed_at not in snapshot_map:
+                snapshot_map[computed_at] = {}
+            snapshot_map[computed_at][ticker] = {
+                "model_prob": round(model_prob, 4) if model_prob else None,
+                "market_price": round(mkt_price, 4) if mkt_price else None,
+            }
+
+        # Normalize model_prob per snapshot so they sum to 1.0
+        ticker_set = {b["ticker"] for b in brackets}
+        snapshots = []
+        for t, probs in snapshot_map.items():
+            # Sum model probs for normalization
+            total = sum(
+                p["model_prob"] for p in probs.values()
+                if p.get("model_prob") and p["model_prob"] > 0
+            )
+            normalized = {}
+            for tk in ticker_set:
+                if tk in probs:
+                    mp = probs[tk].get("model_prob")
+                    mkp = probs[tk].get("market_price")
+                    normalized[tk] = {
+                        "model_prob": round(mp / total, 4) if mp and total > 0 else 0,
+                        "market_price": round(mkp, 4) if mkp else 0,
+                    }
+                else:
+                    normalized[tk] = {"model_prob": 0, "market_price": 0}
+            snapshots.append({"t": t, "probabilities": normalized})
+
+        return jsonify({
+            "brackets": brackets,
+            "snapshots": snapshots,
+            "city": city,
+            "date": date_str,
+        })
+    except Exception as e:
+        logger.error("Convergence distribution failed: %s", e)
+        return jsonify({"error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Risk Limits API — read/write strategy limits in settings.yaml
+# ---------------------------------------------------------------------------
+
+SETTINGS_YAML_PATH = PROJECT_ROOT / "config" / "settings.yaml"
+
+# Fields the dashboard is allowed to edit (whitelist)
+_EDITABLE_LIMITS = {
+    "daily_spend_limit",
+    "max_position_dollars",
+    "max_concurrent_positions",
+    "max_positions_per_city",
+    "max_positions_per_date",
+    "daily_loss_limit",
+}
+
+# Validation rules: (min, max, type)
+_LIMIT_RULES = {
+    "daily_spend_limit":       (0, 500, float),
+    "max_position_dollars":    (0.5, 200, float),
+    "max_concurrent_positions": (1, 100, int),
+    "max_positions_per_city":  (1, 50, int),
+    "max_positions_per_date":  (1, 50, int),
+    "daily_loss_limit":        (1, 1000, float),
+}
+
+
+@app.route("/api/risk-limits", methods=["GET"])
+def get_risk_limits():
+    """Return the current risk limit values from settings.yaml."""
+    try:
+        import yaml
+        with open(SETTINGS_YAML_PATH) as f:
+            raw = yaml.safe_load(f)
+        strategy = raw.get("strategy", {})
+        limits = {k: strategy.get(k) for k in _EDITABLE_LIMITS if k in strategy}
+        return jsonify(limits)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/risk-limits", methods=["PUT"])
+def update_risk_limits():
+    """Update risk limits in settings.yaml.
+
+    Accepts a JSON body with any subset of the editable limit fields.
+    Validates ranges, writes back to YAML, preserving comments and structure.
+    """
+    try:
+        import yaml
+        data = request.get_json(force=True)
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+
+        # Validate each field
+        errors = []
+        cleaned = {}
+        for key, value in data.items():
+            if key not in _EDITABLE_LIMITS:
+                errors.append(f"Unknown field: {key}")
+                continue
+            rule = _LIMIT_RULES.get(key)
+            if rule:
+                lo, hi, typ = rule
+                try:
+                    value = typ(value)
+                except (ValueError, TypeError):
+                    errors.append(f"{key}: must be {typ.__name__}")
+                    continue
+                if value < lo or value > hi:
+                    errors.append(f"{key}: must be between {lo} and {hi}")
+                    continue
+            cleaned[key] = value
+
+        if errors:
+            return jsonify({"error": "Validation failed", "details": errors}), 400
+
+        if not cleaned:
+            return jsonify({"error": "No valid fields to update"}), 400
+
+        # Read current YAML (preserving structure)
+        with open(SETTINGS_YAML_PATH) as f:
+            raw = yaml.safe_load(f)
+
+        strategy = raw.setdefault("strategy", {})
+        for key, value in cleaned.items():
+            strategy[key] = value
+
+        # Write back
+        with open(SETTINGS_YAML_PATH, "w") as f:
+            yaml.dump(raw, f, default_flow_style=False, sort_keys=False)
+
+        logger.info("Risk limits updated via dashboard: %s", cleaned)
+        return jsonify({"ok": True, "updated": cleaned})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Scorecard page route
+# ---------------------------------------------------------------------------
+
+@app.route("/scorecard")
+def scorecard_page():
+    return send_from_directory(STATIC_DIR, "scorecard.html")
+
+
+# ---------------------------------------------------------------------------
+# Scorecard API endpoints — Model performance comparison
+# ---------------------------------------------------------------------------
+
+@app.route("/api/model-scores")
+def api_model_scores():
+    """Aggregated model scorecard data.
+
+    Query params:
+        days: Number of days to look back (default 30)
+        city: Optional city filter
+    """
+    try:
+        days = int(request.args.get("days", 30))
+        city = request.args.get("city", "")
+
+        conn = get_db()
+        query = """
+            SELECT model_source,
+                   COUNT(*) as n,
+                   AVG(brier_contribution) as avg_brier,
+                   SUM(was_best_model) as wins,
+                   SUM(was_worst_model) as losses,
+                   AVG(distance_from_outcome) as avg_distance,
+                   AVG(max_prob_swing) as avg_swing
+            FROM model_scorecards
+            WHERE created_at >= datetime('now', ?)
+        """
+        params = [f"-{days} days"]
+
+        if city:
+            query += " AND city = ?"
+            params.append(city)
+
+        query += " GROUP BY model_source ORDER BY avg_brier ASC"
+
+        rows = conn.execute(query, params).fetchall()
+        conn.close()
+
+        results = []
+        for r in rows:
+            results.append({
+                "model_source": r[0],
+                "n": r[1],
+                "avg_brier": round(r[2], 4) if r[2] else None,
+                "wins": r[3] or 0,
+                "losses": r[4] or 0,
+                "win_rate": round((r[3] or 0) / r[1], 3) if r[1] > 0 else 0,
+                "avg_distance": round(r[5], 4) if r[5] else None,
+                "avg_swing": round(r[6], 4) if r[6] else None,
+            })
+
+        return jsonify(results)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/model-comparison")
+def api_model_comparison():
+    """Rolling Brier per model source for charting.
+
+    Returns daily average Brier by model source.
+    Query params:
+        days: Number of days (default 30)
+    """
+    try:
+        days = int(request.args.get("days", 30))
+        conn = get_db()
+
+        rows = conn.execute("""
+            SELECT target_date, model_source,
+                   AVG(brier_contribution) as avg_brier,
+                   COUNT(*) as n
+            FROM model_scorecards
+            WHERE created_at >= datetime('now', ?)
+            GROUP BY target_date, model_source
+            ORDER BY target_date
+        """, [f"-{days} days"]).fetchall()
+        conn.close()
+
+        # Structure as {date: {source: brier}}
+        by_date = {}
+        for r in rows:
+            d = r[0]
+            if d not in by_date:
+                by_date[d] = {}
+            by_date[d][r[1]] = round(r[2], 4) if r[2] else None
+
+        return jsonify({
+            "dates": sorted(by_date.keys()),
+            "data": by_date,
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/postmortem/<target_date>")
+def api_postmortem(target_date):
+    """Get postmortem report for a target date.
+
+    Query params:
+        city: Optional city filter (returns all cities if omitted)
+    """
+    try:
+        city = request.args.get("city", "")
+        settings = load_settings()
+        archive_dir = settings.archival.absolute_dir / "postmortem"
+
+        reports = []
+        if city:
+            path = archive_dir / f"{target_date}_{city}.json"
+            if path.exists():
+                with open(path) as f:
+                    reports.append(json.load(f))
+        else:
+            # Load all city reports for this date
+            if archive_dir.exists():
+                for path in sorted(archive_dir.glob(f"{target_date}_*.json")):
+                    with open(path) as f:
+                        reports.append(json.load(f))
+
+        return jsonify(reports)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/scorecard/details")
+def api_scorecard_details():
+    """Per-market scorecard details for a specific date and city.
+
+    Query params:
+        date: Target date (required)
+        city: City name (required)
+    """
+    try:
+        target_date = request.args.get("date", "")
+        city = request.args.get("city", "")
+        if not target_date or not city:
+            return jsonify({"error": "date and city required"}), 400
+
+        conn = get_db()
+        rows = conn.execute("""
+            SELECT market_ticker, model_source, final_prob, outcome,
+                   observed_high_f, brier_contribution, first_prob,
+                   prob_at_24h, prob_at_12h, prob_at_6h,
+                   max_prob_swing, final_lead_hours,
+                   distance_from_outcome, was_best_model, was_worst_model
+            FROM model_scorecards
+            WHERE city = ? AND target_date = ?
+            ORDER BY market_ticker, model_source
+        """, [city, target_date]).fetchall()
+        conn.close()
+
+        results = []
+        for r in rows:
+            results.append({
+                "market_ticker": r[0],
+                "model_source": r[1],
+                "final_prob": r[2],
+                "outcome": r[3],
+                "observed_high_f": r[4],
+                "brier_contribution": round(r[5], 4) if r[5] else None,
+                "first_prob": r[6],
+                "prob_at_24h": r[7],
+                "prob_at_12h": r[8],
+                "prob_at_6h": r[9],
+                "max_prob_swing": r[10],
+                "final_lead_hours": r[11],
+                "distance_from_outcome": r[12],
+                "was_best_model": bool(r[13]),
+                "was_worst_model": bool(r[14]),
+            })
+
+        return jsonify(results)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
+# Evolution Dashboard — model forecast evolution vs actual temperature
+# ---------------------------------------------------------------------------
+
+@app.route("/evolution")
+def evolution_page():
+    return send_from_directory(STATIC_DIR, "evolution.html")
+
+
+def _market_contracts_to_percentiles(contracts):
+    """Convert a snapshot of market contract prices into implied P10/P50/P90 temps.
+
+    Uses bracket + above contracts to build a piecewise-uniform CDF,
+    then linearly interpolates for the requested percentiles.
+
+    Returns dict {p10, p50, p90} or None if data is insufficient.
+    """
+    brackets = sorted(
+        [c for c in contracts if not c["above"] and c["yp"] is not None],
+        key=lambda c: c["blo"],
+    )
+    above_list = sorted(
+        [c for c in contracts if c["above"] and c["yp"] is not None],
+        key=lambda c: c["thresh"],
+    )
+
+    if not brackets and len(above_list) < 2:
+        return None
+
+    # --- Build probability bins: (lower_edge, upper_edge, probability) ---
+    bins = []
+
+    # Each bracket covers integer temps [low, high], so upper edge = high + 1
+    for bc in brackets:
+        bins.append((bc["blo"], bc["bhi"] + 1, bc["yp"]))
+
+    # Use the HIGHEST above contract for the upper tail
+    if above_list:
+        above_high = above_list[-1]
+        # Tail extension: half the total bracket span, minimum 3°F
+        if brackets:
+            span = brackets[-1]["bhi"] - brackets[0]["blo"]
+            tail = max(3.0, span / 2.0)
+        else:
+            tail = 5.0
+        bins.append((above_high["thresh"] + 1, above_high["thresh"] + 1 + tail,
+                      above_high["yp"]))
+
+    # Below-low bin: residual probability
+    total_assigned = sum(b[2] for b in bins)
+    below_prob = max(0.0, 1.0 - total_assigned)
+
+    if brackets:
+        lo_edge = brackets[0]["blo"]
+        if above_list:
+            span = brackets[-1]["bhi"] - brackets[0]["blo"]
+            tail = max(3.0, span / 2.0)
+        else:
+            tail = 5.0
+        bins.insert(0, (lo_edge - tail, lo_edge, below_prob))
+    elif above_list:
+        lo_thresh = above_list[0]["thresh"]
+        bins.insert(0, (lo_thresh - 5, lo_thresh + 1, below_prob))
+
+    bins.sort(key=lambda x: x[0])
+
+    # Normalise
+    total = sum(b[2] for b in bins)
+    if total < 0.02:
+        return None
+    bins = [(lo, hi, p / total) for lo, hi, p in bins]
+
+    # --- Build CDF (piecewise-uniform within each bin) ---
+    cdf = []
+    cum = 0.0
+    for lo, hi, p in bins:
+        cdf.append((lo, cum))
+        cum += p
+        cdf.append((hi, cum))
+
+    def _interp(target):
+        for i in range(1, len(cdf)):
+            if cdf[i][1] >= target - 1e-9:
+                t0, p0 = cdf[i - 1]
+                t1, p1 = cdf[i]
+                if abs(p1 - p0) < 1e-12:
+                    return (t0 + t1) / 2
+                return t0 + (target - p0) / (p1 - p0) * (t1 - t0)
+        return cdf[-1][0]
+
+    return {
+        "p10": round(_interp(0.10), 1),
+        "p50": round(_interp(0.50), 1),
+        "p90": round(_interp(0.90), 1),
+    }
+
+
+@app.route("/api/evolution/temperature")
+def api_evolution_temperature():
+    """Temperature forecast evolution from all model sources + observations.
+
+    Returns time-aligned series showing how each model's forecast evolved
+    as new runs came in, alongside actual observed temperatures.
+    """
+    city = request.args.get("city", "NYC")
+    date_str = request.args.get("date", date.today().isoformat())
+
+    try:
+        conn = get_db()
+
+        # 1. All GFS ensemble runs for this city+date
+        #    EnsembleForecast stores one row per (city, model_run_time, valid_time, member)
+        #    valid_time matches the target date. Group by model_run_time to get per-run stats.
+        ens_rows = conn.execute(
+            """SELECT model_run_time, member, temperature_f
+               FROM ensemble_forecasts
+               WHERE city = ? AND date(valid_time) = ?
+               ORDER BY model_run_time ASC, member ASC""",
+            (city, date_str),
+        ).fetchall()
+
+        # Group by model_run_time → compute median, P10, P90
+        from collections import defaultdict
+        ens_runs = defaultdict(list)
+        for run_time, _member, temp_f in ens_rows:
+            ens_runs[run_time].append(temp_f)
+
+        ensemble_series = []
+        for run_time, temps in sorted(ens_runs.items()):
+            temps.sort()
+            n = len(temps)
+            ensemble_series.append({
+                "t": run_time,
+                "median": temps[n // 2],
+                "mean": round(sum(temps) / n, 1),
+                "p10": temps[max(0, int(n * 0.10))],
+                "p90": temps[min(n - 1, int(n * 0.90))],
+                "min": min(temps),
+                "max": max(temps),
+                "n_members": n,
+            })
+
+        # 2. All ECMWF IFS ensemble runs for this city+date
+        ecmwf_rows = conn.execute(
+            """SELECT model_run_time, member, temperature_f
+               FROM ecmwf_forecasts
+               WHERE city = ? AND date(valid_time) = ?
+               ORDER BY model_run_time ASC, member ASC""",
+            (city, date_str),
+        ).fetchall()
+
+        ecmwf_runs = defaultdict(list)
+        for run_time, _member, temp_f in ecmwf_rows:
+            ecmwf_runs[run_time].append(temp_f)
+
+        ecmwf_series = []
+        for run_time, temps in sorted(ecmwf_runs.items()):
+            temps.sort()
+            n = len(temps)
+            ecmwf_series.append({
+                "t": run_time,
+                "median": temps[n // 2],
+                "mean": round(sum(temps) / n, 1),
+                "p10": temps[max(0, int(n * 0.10))],
+                "p90": temps[min(n - 1, int(n * 0.90))],
+                "n_members": n,
+            })
+
+        # 3. All HRRR runs for this city+date
+        hrrr_rows = conn.execute(
+            """SELECT model_run_time, temperature_f
+               FROM hrrr_forecasts
+               WHERE city = ? AND date(valid_time) = ?
+               ORDER BY model_run_time ASC""",
+            (city, date_str),
+        ).fetchall()
+
+        hrrr_series = [{"t": r[0], "max_f": r[1]} for r in hrrr_rows]
+
+        # 4. All NWS forecasts for this city+date
+        nws_rows = conn.execute(
+            """SELECT fetched_at, high_f
+               FROM nws_forecasts
+               WHERE city = ? AND forecast_date = ?
+               ORDER BY fetched_at ASC""",
+            (city, date_str),
+        ).fetchall()
+
+        nws_series = [{"t": r[0], "high_f": r[1]} for r in nws_rows if r[1]]
+
+        # 4. Hourly observations throughout the target date
+        obs_rows = conn.execute(
+            """SELECT observed_at, temperature_f, description
+               FROM hourly_observations
+               WHERE city = ? AND date(observed_at) = ?
+               ORDER BY observed_at ASC""",
+            (city, date_str),
+        ).fetchall()
+
+        observations = [
+            {"t": r[0], "temp_f": r[1], "desc": r[2]} for r in obs_rows
+        ]
+
+        # Compute running max
+        running_max = []
+        current_max = None
+        for obs in observations:
+            if current_max is None or obs["temp_f"] > current_max:
+                current_max = obs["temp_f"]
+            running_max.append({"t": obs["t"], "max_f": current_max})
+
+        # 5. Settlement temperature
+        obs_row = conn.execute(
+            """SELECT high_f FROM observations
+               WHERE city = ? AND date = ?
+               ORDER BY fetched_at DESC LIMIT 1""",
+            (city, date_str),
+        ).fetchone()
+
+        settlement_temp = obs_row[0] if obs_row else None
+
+        # 6. Market-implied temperature distribution from price history
+        #    Join price snapshots with market metadata to get strike-level CDF
+        #    over time, then interpolate P10 / P50 / P90.
+        mkt_rows = conn.execute(
+            """SELECT mph.captured_at, mph.yes_price,
+                      km.is_above_contract, km.threshold_f,
+                      km.bracket_low, km.bracket_high
+               FROM market_price_history mph
+               JOIN kalshi_markets km ON km.market_ticker = mph.market_ticker
+               WHERE km.city = ? AND km.target_date = ?
+               ORDER BY mph.captured_at ASC""",
+            (city, date_str),
+        ).fetchall()
+
+        # Group by snapshot time (truncate to minute for alignment)
+        snap_map = defaultdict(list)
+        for cap_at, yes_p, is_above, thresh, b_lo, b_hi in mkt_rows:
+            t_key = cap_at[:16]  # "2026-03-10T01:55"
+            snap_map[t_key].append({
+                "yp": yes_p if yes_p is not None else 0.0,
+                "above": bool(is_above),
+                "thresh": thresh,
+                "blo": b_lo,
+                "bhi": b_hi,
+            })
+
+        market_implied = []
+        for t_key, contracts in sorted(snap_map.items()):
+            result = _market_contracts_to_percentiles(contracts)
+            if result:
+                result["t"] = t_key
+                market_implied.append(result)
+
+        conn.close()
+
+        # Compute expected observation peak (approx 2-3 PM local time on target date)
+        # and the city's timezone for correct display
+        city_tz_map = {
+            "NYC": "America/New_York", "Chicago": "America/Chicago",
+            "Miami": "America/New_York", "LA": "America/Los_Angeles",
+            "Denver": "America/Denver",
+        }
+        city_tz = city_tz_map.get(city, "America/New_York")
+
+        # Expected high temp occurs ~2-3 PM local time
+        # Convert to UTC ISO string for the chart annotation
+        try:
+            from zoneinfo import ZoneInfo
+            local_tz = ZoneInfo(city_tz)
+            target = datetime.strptime(date_str, "%Y-%m-%d")
+            # Peak temp around 2:30 PM local
+            peak_local = target.replace(hour=14, minute=30, tzinfo=local_tz)
+            expected_peak_utc = peak_local.astimezone(ZoneInfo("UTC")).isoformat()
+        except Exception:
+            expected_peak_utc = None
+
+        return jsonify({
+            "ensemble": ensemble_series,
+            "ecmwf": ecmwf_series,
+            "hrrr": hrrr_series,
+            "nws": nws_series,
+            "observations": observations,
+            "running_max": running_max,
+            "settlement_temp": settlement_temp,
+            "market_implied": market_implied,
+            "city": city,
+            "date": date_str,
+            "city_timezone": city_tz,
+            "expected_peak_utc": expected_peak_utc,
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/evolution/probabilities")
+def api_evolution_probabilities():
+    """Per-model probability trajectories from the Signal table."""
+    city = request.args.get("city", "NYC")
+    date_str = request.args.get("date", date.today().isoformat())
+    ticker = request.args.get("ticker", "")
+
+    try:
+        conn = get_db()
+
+        if ticker:
+            rows = conn.execute(
+                """SELECT computed_at, ensemble_prob, hrrr_prob, nws_prob,
+                          blended_prob, calibrated_prob, market_yes_price,
+                          lead_hours, market_ticker, ecmwf_prob
+                   FROM signals
+                   WHERE city = ? AND target_date = ? AND market_ticker = ?
+                   ORDER BY computed_at ASC""",
+                (city, date_str, ticker),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """SELECT computed_at, ensemble_prob, hrrr_prob, nws_prob,
+                          blended_prob, calibrated_prob, market_yes_price,
+                          lead_hours, market_ticker, ecmwf_prob
+                   FROM signals
+                   WHERE city = ? AND target_date = ?
+                   ORDER BY computed_at ASC""",
+                (city, date_str),
+            ).fetchall()
+
+        # Get list of available tickers
+        tickers = sorted(set(r[8] for r in rows))
+
+        series = [{
+            "t": r[0], "ensemble": r[1], "hrrr": r[2], "nws": r[3],
+            "blended": r[4], "calibrated": r[5], "market": r[6],
+            "lead_hours": r[7], "ticker": r[8], "ecmwf": r[9],
+        } for r in rows]
+
+        conn.close()
+
+        return jsonify({
+            "series": series,
+            "tickers": tickers,
+            "city": city,
+            "date": date_str,
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/evolution/weights")
+def api_evolution_weights():
+    """Adaptive blend weight history from JSON file."""
+    days = int(request.args.get("days", 30))
+
+    weights_path = PROJECT_ROOT / "data" / "adaptive_weights.json"
+    if not weights_path.exists():
+        return jsonify({"history": [], "current": None})
+
+    try:
+        with open(weights_path) as f:
+            data = json.load(f)
+
+        history = data.get("history", [])
+
+        # Filter to last N days
+        from datetime import timedelta
+        cutoff = (datetime.now(timezone.utc) - timedelta(days=days)).isoformat()
+        history = [h for h in history if h.get("at", "") >= cutoff]
+
+        return jsonify({
+            "current": data.get("adaptive_weights"),
+            "brier_scores": data.get("brier_scores"),
+            "n_markets": data.get("n_markets"),
+            "updated_at": data.get("updated_at"),
+            "history": history,
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+# ---------------------------------------------------------------------------
 # Auto-refresh background thread
 # ---------------------------------------------------------------------------
 
@@ -2745,6 +4110,59 @@ _auto_refresh_thread.start()
 
 
 # ---------------------------------------------------------------------------
+# Observation polling thread — collects hourly temps from NWS for convergence
+# ---------------------------------------------------------------------------
+
+def _observation_polling_loop():
+    """Poll NWS for current temperature observations every 5 minutes."""
+    import time as _time
+    POLL_INTERVAL = 300  # 5 minutes
+
+    _time.sleep(10)  # Brief startup delay
+
+    while True:
+        try:
+            settings = load_settings()
+            cities = load_cities()
+            nws = NWSClient(settings)
+            conn = get_db_rw()
+            _ensure_hourly_observations_table(conn)
+
+            now_utc = datetime.now(timezone.utc).isoformat()
+            for city_name, city in cities.items():
+                try:
+                    obs = nws.get_latest_observation(city)
+                    if obs and obs.temperature_f is not None:
+                        conn.execute(
+                            """INSERT OR IGNORE INTO hourly_observations
+                               (city, station, observed_at, temperature_f,
+                                description, fetched_at)
+                               VALUES (?, ?, ?, ?, ?, ?)""",
+                            (city_name, city.station, obs.timestamp,
+                             round(obs.temperature_f, 1), obs.description,
+                             now_utc)
+                        )
+                except Exception as e:
+                    logger.warning("[obs-poll] Failed for %s: %s", city_name, e)
+
+            conn.commit()
+            conn.close()
+            nws.close()
+        except Exception as e:
+            logger.error("[obs-poll] Error: %s", e)
+
+        _time.sleep(POLL_INTERVAL)
+
+
+_obs_poll_thread = threading.Thread(
+    target=_observation_polling_loop,
+    daemon=True,
+    name="obs-poll",
+)
+_obs_poll_thread.start()
+
+
+# ---------------------------------------------------------------------------
 # Entry point
 # ---------------------------------------------------------------------------
 
@@ -2752,6 +4170,7 @@ if __name__ == "__main__":
     # Ensure new tables exist on startup
     try:
         conn = get_db_rw()
+        _ensure_hourly_observations_table(conn)
         _ensure_strategies_table(conn)
         _ensure_backtest_table(conn)
         _ensure_optimization_table(conn)

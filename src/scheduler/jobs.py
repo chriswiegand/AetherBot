@@ -15,12 +15,14 @@ from src.config.cities import CityConfig, load_cities
 from src.config.settings import AppSettings, load_settings
 from src.data.db import init_db, get_session
 from src.data.ensemble_fetcher import EnsembleFetcher, EnsembleResult
+from src.data.ecmwf_fetcher import ECMWFFetcher
 from src.data.hrrr_fetcher import HRRRFetcher
 from src.data.nws_client import NWSClient
 from src.data.kalshi_client import KalshiClient
 from src.data.kalshi_markets import KalshiMarketDiscovery, ParsedMarket
 from src.data.models import (
-    Signal, KalshiMarket, EnsembleForecast, HRRRForecast, NWSForecast, MarketPriceHistory,
+    Signal, KalshiMarket, EnsembleForecast, ECMWFForecast,
+    HRRRForecast, NWSForecast, MarketPriceHistory,
 )
 from src.data.freshness import DataFreshnessTracker
 from src.signals.ensemble_probability import EnsembleProbabilityCalculator
@@ -31,7 +33,10 @@ from src.strategy.edge_detector import EdgeDetector, TradeSignal
 from src.strategy.kelly_sizer import KellySizer
 from src.strategy.risk_manager import RiskManager
 from src.execution.paper_trader import PaperTrader
+from src.execution.live_trader import LiveTrader
 from src.monitoring.alerting import AlertManager
+from src.monitoring.calibrator_trainer import CalibratorTrainer
+from src.signals.adaptive_weights import AdaptiveWeightManager
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +52,7 @@ class BotContext:
 
         # Data clients
         self.ensemble_fetcher = EnsembleFetcher(settings)
+        self.ecmwf_fetcher = ECMWFFetcher(settings)
         self.hrrr_fetcher = HRRRFetcher(settings)
         self.nws_client = NWSClient(settings)
         self.kalshi_client = KalshiClient(settings)
@@ -65,11 +71,29 @@ class BotContext:
         self.kelly_sizer = KellySizer(settings.strategy)
         self.risk_manager = RiskManager(settings.strategy)
 
-        # Execution
-        self.paper_trader = PaperTrader(settings)
+        # Execution — select trader based on mode
+        if settings.mode == "live":
+            self.trader = LiveTrader(self.kalshi_client)
+            self.paper_trader = None  # Not used in live mode
+        else:
+            self.trader = PaperTrader(settings)
+            self.paper_trader = self.trader  # Backwards compat
 
         # Monitoring
         self.alerts = AlertManager()
+
+        # Calibrator training — load from disk if available
+        self.calibrator_trainer = CalibratorTrainer(self.calibrator)
+        self.calibrator_trainer.load_if_exists()
+
+        # Adaptive blend weights — load from disk if available
+        self.adaptive_weight_mgr = AdaptiveWeightManager()
+        try:
+            adaptive = self.adaptive_weight_mgr.load()
+            if adaptive:
+                self.model_blender.set_adaptive_weights(adaptive)
+        except Exception as e:
+            logger.warning(f"Failed to load adaptive weights (non-fatal): {e}")
 
         # State
         self._active_markets: list[ParsedMarket] = []
@@ -77,6 +101,7 @@ class BotContext:
     def shutdown(self):
         """Clean up resources."""
         self.ensemble_fetcher.close()
+        self.ecmwf_fetcher.close()
         self.hrrr_fetcher.close()
         self.nws_client.close()
         self.kalshi_client.close()
@@ -94,6 +119,15 @@ def fetch_all_ensembles(ctx: BotContext):
         except Exception as e:
             logger.error(f"Ensemble fetch failed for {city_name}: {e}")
             ctx.alerts.warning(f"Ensemble fetch failed: {city_name}", "data")
+
+
+def fetch_all_ecmwf(ctx: BotContext):
+    """Fetch ECMWF IFS ensemble data for all cities."""
+    for city_name, city_config in ctx.cities.items():
+        try:
+            ctx.ecmwf_fetcher.fetch_and_store(city_config)
+        except Exception as e:
+            logger.error(f"ECMWF fetch failed for {city_name}: {e}")
 
 
 def fetch_all_hrrr(ctx: BotContext):
@@ -125,7 +159,7 @@ def _check_manual_refresh_signals(ctx: BotContext) -> set[str]:
     """
     signal_dir = Path(ctx.settings.database.absolute_path).parent / "signals"
     triggered: set[str] = set()
-    for source in ["gfs", "hrrr", "nws"]:
+    for source in ["gfs", "hrrr", "nws", "ecmwf"]:
         signal_file = signal_dir / f"refresh_{source}.signal"
         if signal_file.exists():
             try:
@@ -140,32 +174,53 @@ def _check_manual_refresh_signals(ctx: BotContext) -> set[str]:
 def smart_data_fetch(ctx: BotContext):
     """Check freshness of each data source and fetch only when new data exists.
 
-    Replaces the old fixed-interval fetch_all_ensembles/hrrr/nws jobs.
-    Runs every ~10 minutes and only fetches when model-run-aware logic
-    determines new data should be available.
+    When smart_fetch_enabled is False, unconditionally fetches all sources
+    every cycle (matching Kalshi poll frequency for fresh model data).
     """
+    # Check for manual refresh signals from dashboard
+    manual = _check_manual_refresh_signals(ctx)
+
+    # If smart fetch is disabled, unconditionally fetch everything
+    if not ctx.settings.scheduler.smart_fetch_enabled:
+        logger.info("Smart fetch disabled — fetching all sources unconditionally")
+        fetch_all_ensembles(ctx)
+        fetch_all_ecmwf(ctx)
+        fetch_all_hrrr(ctx)
+        fetch_all_nws(ctx)
+        return
+
     tracker = DataFreshnessTracker(
         ctx.settings.database.absolute_path,
         gfs_lag_hours=ctx.settings.scheduler.gfs_availability_lag_hours,
         hrrr_lag_hours=ctx.settings.scheduler.hrrr_availability_lag_hours,
     )
 
-    # Check for manual refresh signals from dashboard
-    manual = _check_manual_refresh_signals(ctx)
+    new_data = False  # Track whether any source got fresh data
 
     # GFS Ensemble
     if "gfs" in manual or tracker.should_fetch_gfs():
         reason = "manual refresh" if "gfs" in manual else "new GFS run available"
         logger.info(f"Fetching GFS ensemble ({reason})")
         fetch_all_ensembles(ctx)
+        new_data = True
     else:
         logger.debug("GFS ensemble data is fresh — skipping fetch")
+
+    # ECMWF IFS Ensemble
+    if "ecmwf" in manual or tracker.should_fetch_ecmwf():
+        reason = "manual refresh" if "ecmwf" in manual else "new ECMWF run available"
+        logger.info(f"Fetching ECMWF IFS ({reason})")
+        fetch_all_ecmwf(ctx)
+        new_data = True
+    else:
+        logger.debug("ECMWF IFS data is fresh — skipping fetch")
 
     # HRRR
     if "hrrr" in manual or tracker.should_fetch_hrrr():
         reason = "manual refresh" if "hrrr" in manual else "new HRRR run available"
         logger.info(f"Fetching HRRR ({reason})")
         fetch_all_hrrr(ctx)
+        new_data = True
     else:
         logger.debug("HRRR data is fresh — skipping fetch")
 
@@ -176,6 +231,14 @@ def smart_data_fetch(ctx: BotContext):
         fetch_all_nws(ctx)
     else:
         logger.debug("NWS data is fresh — skipping fetch")
+
+    # --- Fast-path: if any model got fresh data, trigger immediate scan ---
+    if new_data:
+        logger.info("⚡ New model data detected — triggering fast-path scan & trade")
+        try:
+            scan_and_trade(ctx)
+        except Exception as e:
+            logger.error(f"Fast-path scan_and_trade failed: {e}")
 
 
 # ---------------------------------------------------------------------------
@@ -360,6 +423,53 @@ def _load_ensemble_from_db(city_name: str, target_date: str) -> EnsembleResult |
         session.close()
 
 
+def _load_ecmwf_from_db(city_name: str, target_date: str) -> list[float] | None:
+    """Load the latest ECMWF IFS ensemble member daily maxes from the DB.
+
+    Returns list of 51 member maxes, or None if insufficient data.
+    """
+    session = get_session()
+    try:
+        from sqlalchemy import func
+        latest_run = (
+            session.query(func.max(ECMWFForecast.model_run_time))
+            .filter(ECMWFForecast.city == city_name)
+            .scalar()
+        )
+        if not latest_run:
+            return None
+
+        rows = (
+            session.query(ECMWFForecast)
+            .filter(
+                ECMWFForecast.city == city_name,
+                ECMWFForecast.model_run_time == latest_run,
+                ECMWFForecast.valid_time == target_date,
+            )
+            .order_by(ECMWFForecast.member)
+            .all()
+        )
+
+        if not rows:
+            return None
+
+        member_maxes = [float("nan")] * 51
+        for row in rows:
+            if 0 <= row.member < 51:
+                member_maxes[row.member] = row.temperature_f
+
+        valid_count = sum(1 for t in member_maxes if t == t)
+        if valid_count < 20:
+            return None
+
+        return member_maxes
+    except Exception as e:
+        logger.debug(f"Failed to load ECMWF from DB for {city_name}/{target_date}: {e}")
+        return None
+    finally:
+        session.close()
+
+
 def _load_hrrr_daily_max(city_name: str, target_date: str) -> tuple[float | None, str | None]:
     """Load the latest HRRR daily max forecast for a city+date from the DB.
 
@@ -523,6 +633,7 @@ def _store_all_signals(
                 market_ticker=ticker,
                 computed_at=now,
                 ensemble_prob=prob_result.probability,
+                ecmwf_prob=extra.get("ecmwf_prob"),
                 hrrr_prob=extra.get("hrrr_prob"),
                 nws_prob=extra.get("nws_prob"),
                 blended_prob=extra.get("blended_prob"),
@@ -565,8 +676,12 @@ def _run_trading_cycle(
         key = (m.city, m.target_date)
         by_city_date.setdefault(key, []).append(m)
 
-    # Get portfolio state
-    portfolio = ctx.risk_manager.get_portfolio_state(ctx.paper_trader.bankroll)
+    # Get portfolio state — use Kalshi balance in live mode, paper bankroll otherwise
+    if ctx.settings.mode == "live":
+        bankroll = ctx.kalshi_client.get_balance()
+    else:
+        bankroll = ctx.trader.bankroll
+    portfolio = ctx.risk_manager.get_portfolio_state(bankroll, mode=ctx.settings.mode)
 
     for (city_name, target_date), city_markets in by_city_date.items():
         city_config = ctx.cities.get(city_name)
@@ -610,6 +725,18 @@ def _run_trading_cycle(
             corrected_member_maxes, city_markets
         )
 
+        # --- Load ECMWF IFS ensemble from DB ---
+        ecmwf_maxes = _load_ecmwf_from_db(city_name, target_date)
+        ecmwf_probs = {}
+        if ecmwf_maxes is not None:
+            ecmwf_probs = ctx.ensemble_calc.get_full_distribution(
+                ecmwf_maxes, city_markets
+            )
+            logger.debug(
+                f"[{tag}] ECMWF loaded for {city_name}/{target_date}: "
+                f"{sum(1 for t in ecmwf_maxes if t == t)} valid members"
+            )
+
         # --- Load NWS high forecast ---
         nws_high = _load_nws_high(city_name, target_date)
 
@@ -624,6 +751,12 @@ def _run_trading_cycle(
                 continue
 
             ensemble_prob = prob_result.probability
+
+            # --- Compute ECMWF probability ---
+            ecmwf_prob = None
+            ecmwf_result = ecmwf_probs.get(m.market_ticker)
+            if ecmwf_result is not None:
+                ecmwf_prob = ecmwf_result.probability
 
             # --- Compute HRRR probability ---
             hrrr_prob = None
@@ -649,9 +782,10 @@ def _run_trading_cycle(
                         nws_high, m.bracket_low, m.bracket_high, historical_std=4.0,
                     )
 
-            # --- Blend all sources ---
+            # --- Blend all sources (now including ECMWF) ---
             blended = ctx.model_blender.blend(
-                ensemble_prob, hrrr_prob, nws_prob, lead_hours
+                ensemble_prob, hrrr_prob, nws_prob, lead_hours,
+                ecmwf_prob=ecmwf_prob,
             )
 
             # Calibrate the BLENDED probability (not raw ensemble)
@@ -666,6 +800,7 @@ def _run_trading_cycle(
             ticker_probs[m.market_ticker] = {
                 "hrrr_prob": hrrr_prob,
                 "nws_prob": nws_prob,
+                "ecmwf_prob": ecmwf_prob,
                 "blended_prob": blended,
             }
 
@@ -697,7 +832,7 @@ def _run_trading_cycle(
                 continue
 
             # Execute
-            trade = ctx.paper_trader.execute_trade(signal, size)
+            trade = ctx.trader.execute_trade(signal, size)
             if trade:
                 portfolio.open_positions += 1
                 portfolio.bankroll -= size.total_cost

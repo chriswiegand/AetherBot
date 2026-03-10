@@ -17,6 +17,7 @@ from src.config.cities import CityConfig
 from src.config.settings import AppSettings, load_settings
 from src.data.db import get_session
 from src.data.models import HRRRForecast
+from src.data.parquet_archiver import archive_hrrr_hourly
 from src.utils.time_utils import (
     filter_times_in_observation_window,
     parse_iso_datetime,
@@ -121,6 +122,8 @@ class HRRRFetcher:
         """Store HRRR forecast data in the database."""
         session = get_session()
         inserted = 0
+        updated = 0
+        now = datetime.now(timezone.utc).isoformat()
         try:
             for result in results:
                 existing = (
@@ -133,6 +136,13 @@ class HRRRFetcher:
                     .first()
                 )
                 if existing:
+                    # Upsert: update temperature and fetched_at even if
+                    # model_run_time matches — the underlying model data
+                    # may have been refreshed by the API.
+                    if existing.temperature_f != result.daily_max_f:
+                        existing.temperature_f = result.daily_max_f
+                        updated += 1
+                    existing.fetched_at = now
                     continue
 
                 row = HRRRForecast(
@@ -141,18 +151,37 @@ class HRRRFetcher:
                     model_run_time=result.model_run_time,
                     valid_time=result.target_date,
                     temperature_f=result.daily_max_f,
-                    fetched_at=datetime.now(timezone.utc).isoformat(),
+                    fetched_at=now,
                 )
                 session.add(row)
                 inserted += 1
 
             session.commit()
+
+            # Archive hourly HRRR profile to Parquet (best-effort)
+            try:
+                archival_cfg = self.settings.archival
+                for result in results:
+                    if result.hourly_temps and result.valid_times:
+                        archive_hrrr_hourly(
+                            config=archival_cfg,
+                            city=result.city,
+                            target_date=result.target_date,
+                            model_run_time=result.model_run_time,
+                            hourly_temps=result.hourly_temps,
+                            valid_times=result.valid_times,
+                        )
+            except Exception as e:
+                logger.warning(f"HRRR archival failed (non-fatal): {e}")
+
         except Exception:
             session.rollback()
             raise
         finally:
             session.close()
 
+        if updated:
+            logger.info(f"Updated {updated} HRRR records for {city.name}")
         return inserted
 
     def fetch_and_store(self, city: CityConfig, forecast_days: int = 2) -> list[HRRRResult]:
@@ -160,7 +189,7 @@ class HRRRFetcher:
         results = self.fetch_hrrr(city, forecast_days)
         if results:
             count = self.store_hrrr(results, city)
-            logger.info(f"Stored {count} HRRR records for {city.name}")
+            logger.info(f"Stored {count} new HRRR records for {city.name} ({len(results)} dates)")
         return results
 
     def close(self):

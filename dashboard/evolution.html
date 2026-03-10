@@ -1,0 +1,685 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AetherBot - Model Evolution</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>%E2%9A%A1</text></svg>">
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3"></script>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3"></script>
+<style>
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --bg-canvas:#0d1117;--bg-card:#161b22;--bg-card-alt:#1c2128;
+    --border:#30363d;--border-light:#484f58;
+    --text-primary:#e6edf3;--text-secondary:#8b949e;--text-muted:#6e7681;
+    --accent:#58a6ff;--green:#3fb950;--red:#f85149;--yellow:#d29922;--orange:#db6d28;
+    --purple:#a371f7;--pink:#f778ba;--cyan:#39d2c0;
+    --radius:12px;--radius-sm:8px;--shadow:0 1px 3px rgba(0,0,0,.4);
+  }
+  html{font-size:16px}
+  body{font-family:system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+    background:var(--bg-canvas);color:var(--text-primary);line-height:1.6;min-height:100vh;overflow-x:hidden}
+  .container{max-width:1400px;margin:0 auto;padding:12px}
+  @media(min-width:768px){.container{padding:24px 32px}}
+
+  .header{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px;padding:16px 0 12px;border-bottom:1px solid var(--border);margin-bottom:20px}
+  .header h1{font-size:1.15rem;font-weight:700;display:flex;align-items:center;gap:6px}
+  .header h1 span{font-size:1.3rem}
+  .header-right{display:flex;align-items:center;gap:12px}
+  .header-link{color:var(--accent);text-decoration:none;font-size:.8rem}
+  .header-link:hover{text-decoration:underline}
+
+  .card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius);padding:16px;margin-bottom:16px;box-shadow:var(--shadow)}
+  .card-title{font-size:.9rem;font-weight:700;margin-bottom:12px;color:var(--text-primary)}
+
+  .controls-bar{display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:14px 16px}
+  .controls-bar label{font-size:.75rem;color:var(--text-secondary);text-transform:uppercase;letter-spacing:.04em;font-weight:600}
+  .controls-bar select,.controls-bar input[type="date"]{
+    background:var(--bg-canvas);border:1px solid var(--border);border-radius:6px;
+    color:var(--text-primary);padding:6px 10px;font-size:.82rem;cursor:pointer}
+  .controls-bar select:focus,.controls-bar input:focus{border-color:var(--accent);outline:none}
+  .controls-bar .refresh-btn{background:var(--bg-card-alt);border:1px solid var(--border);border-radius:6px;color:var(--text-primary);padding:6px 12px;font-size:.78rem;cursor:pointer;transition:border-color .2s}
+  .controls-bar .refresh-btn:hover{border-color:var(--accent)}
+
+  .split-grid{display:grid;grid-template-columns:1fr;gap:16px}
+  @media(min-width:900px){.split-grid{grid-template-columns:1fr 1fr}}
+
+  .chart-container{position:relative;width:100%;min-height:360px}
+  .chart-container canvas{width:100%!important}
+  .chart-container.tall{min-height:420px}
+
+  .stat-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:16px}
+  .stat-card{background:var(--bg-card);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px;text-align:center}
+  .stat-card .value{font-size:1.5rem;font-weight:700;color:var(--accent)}
+  .stat-card .label{font-size:.68rem;color:var(--text-muted);text-transform:uppercase;letter-spacing:.04em;margin-top:2px}
+  .stat-card .value.green{color:var(--green)}
+  .stat-card .value.red{color:var(--red)}
+  .stat-card .value.orange{color:var(--orange)}
+  .stat-card .value.cyan{color:var(--cyan)}
+  .stat-card .value.purple{color:var(--purple)}
+  .stat-card .value.pink{color:var(--pink)}
+
+  .empty-msg{color:var(--text-muted);font-size:.85rem;text-align:center;padding:40px 20px}
+</style>
+</head>
+<body>
+<div class="container">
+
+  <header class="header">
+    <div class="header-left">
+      <h1><span>&#9889;</span> AetherBot &mdash; Model Evolution</h1>
+    </div>
+    <div class="header-right">
+      <a href="/" class="header-link">&larr; Dashboard</a>
+      <a href="/tracker" class="header-link">Tracker</a>
+      <a href="/convergence" class="header-link">Convergence</a>
+      <a href="/math" class="header-link">Math</a>
+      <a href="/strategy-lab" class="header-link">Strategy Lab</a>
+      <a href="/scorecard" class="header-link">Scorecard</a>
+    </div>
+  </header>
+
+  <!-- Controls -->
+  <div class="card">
+    <div class="controls-bar">
+      <div>
+        <label>City</label><br>
+        <select id="city-select">
+          <option value="NYC">NYC</option>
+          <option value="Chicago">Chicago</option>
+          <option value="Miami">Miami</option>
+          <option value="LA">LA</option>
+          <option value="Denver">Denver</option>
+        </select>
+      </div>
+      <div>
+        <label>Date</label><br>
+        <input type="date" id="date-input">
+      </div>
+      <div>
+        <label>Market</label><br>
+        <select id="ticker-select">
+          <option value="">All markets</option>
+        </select>
+      </div>
+      <div style="align-self:flex-end">
+        <button class="refresh-btn" onclick="refresh()">Refresh</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Stat cards -->
+  <div class="stat-row" id="stats-row">
+    <div class="stat-card"><div class="value orange" id="stat-gfs">&mdash;</div><div class="label">GFS Median</div></div>
+    <div class="stat-card"><div class="value pink" id="stat-ecmwf">&mdash;</div><div class="label">ECMWF Median</div></div>
+    <div class="stat-card"><div class="value" id="stat-hrrr">&mdash;</div><div class="label">HRRR Forecast</div></div>
+    <div class="stat-card"><div class="value cyan" id="stat-nws">&mdash;</div><div class="label">NWS Forecast</div></div>
+    <div class="stat-card"><div class="value purple" id="stat-market">&mdash;</div><div class="label">Market Implied</div></div>
+    <div class="stat-card"><div class="value red" id="stat-settlement">&mdash;</div><div class="label">Settlement</div></div>
+    <div class="stat-card"><div class="value green" id="stat-runs">&mdash;</div><div class="label">Model Runs</div></div>
+  </div>
+
+  <!-- Chart 1: Temperature Forecast Evolution -->
+  <div class="card">
+    <div class="card-title">Temperature Forecast Evolution</div>
+    <div class="chart-container tall">
+      <canvas id="temp-chart"></canvas>
+    </div>
+  </div>
+
+  <!-- Split: Probability Evolution + Adaptive Weights -->
+  <div class="split-grid">
+    <div class="card">
+      <div class="card-title">Probability Evolution by Model</div>
+      <div class="chart-container">
+        <canvas id="prob-chart"></canvas>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Adaptive Blend Weights (60-day rolling)</div>
+      <div class="chart-container">
+        <canvas id="weights-chart"></canvas>
+      </div>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ========================================
+// State
+// ========================================
+let tempChart = null;
+let probChart = null;
+let weightsChart = null;
+
+// Default date to today
+document.getElementById('date-input').value = new Date().toISOString().slice(0, 10);
+
+// ========================================
+// Data fetching
+// ========================================
+async function refresh() {
+  const city = document.getElementById('city-select').value;
+  const dateStr = document.getElementById('date-input').value;
+  const ticker = document.getElementById('ticker-select').value;
+
+  const [tempData, probData, weightsData] = await Promise.all([
+    fetch(`/api/evolution/temperature?city=${city}&date=${dateStr}`).then(r => r.json()),
+    fetch(`/api/evolution/probabilities?city=${city}&date=${dateStr}&ticker=${ticker}`).then(r => r.json()),
+    fetch(`/api/evolution/weights?days=90`).then(r => r.json()),
+  ]);
+
+  updateStats(tempData);
+  updateTickerDropdown(probData.tickers || []);
+  drawTempChart(tempData);
+  drawProbChart(probData);
+  drawWeightsChart(weightsData);
+}
+
+// ========================================
+// Timestamp helpers — ensure all UTC timestamps are parsed correctly
+// DB stores times as UTC but without 'Z' suffix; JS Date() treats
+// bare ISO strings as local time. This helper ensures UTC parsing.
+// ========================================
+function utcDate(ts) {
+  if (!ts) return null;
+  let s = ts.replace(' ', 'T');
+  // Already has timezone info (+00:00 or Z) → parse directly
+  if (s.includes('+') && s.indexOf('+') > 10) return new Date(s);
+  if (s.endsWith('Z')) return new Date(s);
+  // Bare ISO string → append Z to parse as UTC
+  return new Date(s + 'Z');
+}
+
+// ========================================
+// Stats
+// ========================================
+function updateStats(data) {
+  const ens = data.ensemble;
+  const lastEns = ens.length > 0 ? ens[ens.length - 1] : null;
+  document.getElementById('stat-gfs').textContent = lastEns ? `${lastEns.median}°F` : '—';
+
+  const ecmwf = data.ecmwf || [];
+  const lastEcmwf = ecmwf.length > 0 ? ecmwf[ecmwf.length - 1] : null;
+  document.getElementById('stat-ecmwf').textContent = lastEcmwf ? `${lastEcmwf.median}°F` : '—';
+
+  const lastHrrr = data.hrrr.length > 0 ? data.hrrr[data.hrrr.length - 1] : null;
+  document.getElementById('stat-hrrr').textContent = lastHrrr ? `${lastHrrr.max_f}°F` : '—';
+
+  const lastNws = data.nws.length > 0 ? data.nws[data.nws.length - 1] : null;
+  document.getElementById('stat-nws').textContent = lastNws ? `${lastNws.high_f}°F` : '—';
+
+  const mi = data.market_implied || [];
+  const lastMkt = mi.length > 0 ? mi[mi.length - 1] : null;
+  document.getElementById('stat-market').textContent = lastMkt ? `${lastMkt.p50}°F` : '—';
+
+  document.getElementById('stat-settlement').textContent =
+    data.settlement_temp != null ? `${data.settlement_temp}°F` : '—';
+
+  document.getElementById('stat-runs').textContent = ens.length;
+}
+
+function updateTickerDropdown(tickers) {
+  const sel = document.getElementById('ticker-select');
+  const current = sel.value;
+  sel.innerHTML = '<option value="">All markets</option>';
+  for (const t of tickers) {
+    const opt = document.createElement('option');
+    opt.value = t;
+    opt.textContent = t;
+    sel.appendChild(opt);
+  }
+  if (current && tickers.includes(current)) sel.value = current;
+}
+
+// ========================================
+// Chart 1: Temperature Forecast Evolution
+// ========================================
+function drawTempChart(data) {
+  const ctx = document.getElementById('temp-chart').getContext('2d');
+  if (tempChart) tempChart.destroy();
+
+  const datasets = [];
+
+  // GFS P10-P90 band (two invisible boundary lines + fill)
+  if (data.ensemble.length > 0) {
+    datasets.push({
+      label: 'GFS P90',
+      data: data.ensemble.map(d => ({ x: utcDate(d.t), y: d.p90 })),
+      borderColor: 'transparent',
+      backgroundColor: 'transparent',
+      pointRadius: 0,
+      fill: false,
+      order: 10,
+    });
+    datasets.push({
+      label: 'GFS P10',
+      data: data.ensemble.map(d => ({ x: utcDate(d.t), y: d.p10 })),
+      borderColor: 'transparent',
+      backgroundColor: 'rgba(219, 109, 40, 0.12)',
+      pointRadius: 0,
+      fill: '-1',
+      order: 10,
+    });
+    // GFS median line
+    datasets.push({
+      label: 'GFS Median',
+      data: data.ensemble.map(d => ({ x: utcDate(d.t), y: d.median })),
+      borderColor: '#db6d28',
+      backgroundColor: 'transparent',
+      borderWidth: 2.5,
+      pointRadius: 4,
+      pointBackgroundColor: '#db6d28',
+      tension: 0.2,
+      order: 3,
+    });
+  }
+
+  // Kalshi Market-Implied P10-P90 band
+  if (data.market_implied && data.market_implied.length > 0) {
+    datasets.push({
+      label: 'Market P90',
+      data: data.market_implied.map(d => ({ x: utcDate(d.t), y: d.p90 })),
+      borderColor: 'transparent',
+      backgroundColor: 'transparent',
+      pointRadius: 0,
+      fill: false,
+      order: 11,
+    });
+    datasets.push({
+      label: 'Market P10',
+      data: data.market_implied.map(d => ({ x: utcDate(d.t), y: d.p10 })),
+      borderColor: 'transparent',
+      backgroundColor: 'rgba(163, 113, 247, 0.10)',
+      pointRadius: 0,
+      fill: '-1',
+      order: 11,
+    });
+    // Market P50 (median) line
+    datasets.push({
+      label: 'Market Implied',
+      data: data.market_implied.map(d => ({ x: utcDate(d.t), y: d.p50 })),
+      borderColor: '#a371f7',
+      backgroundColor: 'transparent',
+      borderWidth: 2,
+      borderDash: [6, 3],
+      pointRadius: 0,
+      tension: 0.3,
+      order: 5,
+    });
+  }
+
+  // ECMWF IFS P10-P90 band
+  if (data.ecmwf && data.ecmwf.length > 0) {
+    datasets.push({
+      label: 'ECMWF P90',
+      data: data.ecmwf.map(d => ({ x: utcDate(d.t), y: d.p90 })),
+      borderColor: 'transparent',
+      backgroundColor: 'transparent',
+      pointRadius: 0,
+      fill: false,
+      order: 12,
+    });
+    datasets.push({
+      label: 'ECMWF P10',
+      data: data.ecmwf.map(d => ({ x: utcDate(d.t), y: d.p10 })),
+      borderColor: 'transparent',
+      backgroundColor: 'rgba(247, 120, 186, 0.10)',
+      pointRadius: 0,
+      fill: '-1',
+      order: 12,
+    });
+    // ECMWF median line
+    datasets.push({
+      label: 'ECMWF Median',
+      data: data.ecmwf.map(d => ({ x: utcDate(d.t), y: d.median })),
+      borderColor: '#f778ba',
+      backgroundColor: 'transparent',
+      borderWidth: 2,
+      pointRadius: 3,
+      pointBackgroundColor: '#f778ba',
+      tension: 0.2,
+      order: 3,
+    });
+  }
+
+  // HRRR
+  if (data.hrrr.length > 0) {
+    datasets.push({
+      label: 'HRRR',
+      data: data.hrrr.map(d => ({ x: utcDate(d.t), y: d.max_f })),
+      borderColor: '#58a6ff',
+      backgroundColor: 'transparent',
+      borderWidth: 2.5,
+      pointRadius: 5,
+      pointStyle: 'circle',
+      pointBackgroundColor: '#58a6ff',
+      tension: 0.2,
+      order: 2,
+    });
+  }
+
+  // NWS
+  if (data.nws.length > 0) {
+    datasets.push({
+      label: 'NWS',
+      data: data.nws.map(d => ({ x: utcDate(d.t), y: d.high_f })),
+      borderColor: '#39d2c0',
+      backgroundColor: 'transparent',
+      borderWidth: 2,
+      pointRadius: 4,
+      pointStyle: 'rectRot',
+      pointBackgroundColor: '#39d2c0',
+      stepped: 'before',
+      order: 4,
+    });
+  }
+
+  // Hourly observations
+  if (data.observations.length > 0) {
+    datasets.push({
+      label: 'Observed Temp',
+      data: data.observations.map(d => ({ x: utcDate(d.t), y: d.temp_f })),
+      borderColor: '#3fb950',
+      backgroundColor: 'transparent',
+      borderWidth: 1.5,
+      pointRadius: 3,
+      pointBackgroundColor: '#3fb950',
+      tension: 0.3,
+      borderDash: [],
+      order: 1,
+    });
+  }
+
+  // Running observed max
+  if (data.running_max.length > 0) {
+    datasets.push({
+      label: 'Running Max',
+      data: data.running_max.map(d => ({ x: utcDate(d.t), y: d.max_f })),
+      borderColor: '#3fb950',
+      backgroundColor: 'transparent',
+      borderWidth: 2.5,
+      borderDash: [6, 3],
+      pointRadius: 0,
+      tension: 0,
+      order: 1,
+    });
+  }
+
+  // Annotations
+  const annotations = {};
+
+  // Settlement temperature (horizontal line)
+  if (data.settlement_temp != null) {
+    annotations.settlement = {
+      type: 'line',
+      yMin: data.settlement_temp,
+      yMax: data.settlement_temp,
+      borderColor: '#f85149',
+      borderWidth: 2,
+      borderDash: [8, 4],
+      label: {
+        display: true,
+        content: `Settlement: ${data.settlement_temp}°F`,
+        position: 'start',
+        backgroundColor: 'rgba(248, 81, 73, 0.85)',
+        color: '#fff',
+        font: { size: 11, weight: 'bold' },
+        padding: 4,
+      },
+    };
+  }
+
+  // Expected peak observation time (vertical line)
+  if (data.expected_peak_utc) {
+    annotations.expectedPeak = {
+      type: 'line',
+      xMin: new Date(data.expected_peak_utc),
+      xMax: new Date(data.expected_peak_utc),
+      borderColor: '#d29922',
+      borderWidth: 1.5,
+      borderDash: [6, 3],
+      label: {
+        display: true,
+        content: 'Expected High',
+        position: 'start',
+        backgroundColor: 'rgba(210, 153, 34, 0.85)',
+        color: '#fff',
+        font: { size: 10, weight: 'bold' },
+        padding: 3,
+        rotation: -90,
+      },
+    };
+  }
+
+  tempChart = new Chart(ctx, {
+    type: 'line',
+    data: { datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'nearest', intersect: false },
+      scales: {
+        x: {
+          type: 'time',
+          time: { tooltipFormat: 'MMM d, HH:mm', displayFormats: { hour: 'MMM d HH:mm', day: 'MMM d' } },
+          grid: { color: '#21262d' },
+          ticks: { color: '#8b949e', maxTicksLimit: 12 },
+          title: { display: true, text: 'Collection Time (local)', color: '#8b949e' },
+        },
+        y: {
+          grid: { color: '#21262d' },
+          ticks: { color: '#8b949e', callback: v => v + '°F' },
+          title: { display: true, text: 'Daily High (°F)', color: '#8b949e' },
+        },
+      },
+      plugins: {
+        legend: { labels: { color: '#e6edf3', usePointStyle: true, padding: 16 } },
+        annotation: { annotations },
+        tooltip: {
+          backgroundColor: '#1c2128',
+          borderColor: '#30363d',
+          borderWidth: 1,
+          titleColor: '#e6edf3',
+          bodyColor: '#8b949e',
+          callbacks: {
+            label: item => `${item.dataset.label}: ${item.parsed.y}°F`,
+          },
+        },
+      },
+    },
+  });
+}
+
+// ========================================
+// Chart 2: Probability Evolution
+// ========================================
+function drawProbChart(data) {
+  const ctx = document.getElementById('prob-chart').getContext('2d');
+  if (probChart) probChart.destroy();
+
+  if (!data.series || data.series.length === 0) {
+    probChart = new Chart(ctx, {
+      type: 'line', data: { datasets: [] },
+      options: { responsive: true, maintainAspectRatio: false,
+        plugins: { title: { display: true, text: 'No signal data for this date', color: '#6e7681' } } }
+    });
+    return;
+  }
+
+  // Filter to selected ticker or first available
+  const selectedTicker = document.getElementById('ticker-select').value;
+  let filtered = data.series;
+  if (selectedTicker) {
+    filtered = data.series.filter(s => s.ticker === selectedTicker);
+  } else if (data.tickers && data.tickers.length > 0) {
+    // Default to first ticker
+    filtered = data.series.filter(s => s.ticker === data.tickers[0]);
+  }
+
+  const models = [
+    { key: 'ensemble', label: 'Ensemble', color: '#db6d28' },
+    { key: 'ecmwf', label: 'ECMWF', color: '#f778ba' },
+    { key: 'hrrr', label: 'HRRR', color: '#58a6ff' },
+    { key: 'nws', label: 'NWS', color: '#39d2c0' },
+    { key: 'blended', label: 'Blended', color: '#a371f7' },
+    { key: 'calibrated', label: 'Calibrated', color: '#3fb950' },
+    { key: 'market', label: 'Market Price', color: '#6e7681' },
+  ];
+
+  const datasets = models.map(m => ({
+    label: m.label,
+    data: filtered
+      .filter(s => s[m.key] != null)
+      .map(s => ({ x: utcDate(s.t), y: s[m.key] })),
+    borderColor: m.color,
+    backgroundColor: 'transparent',
+    borderWidth: m.key === 'market' ? 1.5 : 2,
+    borderDash: m.key === 'market' ? [4, 3] : [],
+    pointRadius: 0,
+    tension: 0.3,
+  })).filter(ds => ds.data.length > 0);
+
+  probChart = new Chart(ctx, {
+    type: 'line',
+    data: { datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'nearest', intersect: false },
+      scales: {
+        x: {
+          type: 'time',
+          time: { tooltipFormat: 'MMM d, HH:mm' },
+          grid: { color: '#21262d' },
+          ticks: { color: '#8b949e', maxTicksLimit: 8 },
+        },
+        y: {
+          min: 0, max: 1,
+          grid: { color: '#21262d' },
+          ticks: { color: '#8b949e', callback: v => (v * 100).toFixed(0) + '%' },
+          title: { display: true, text: 'Probability', color: '#8b949e' },
+        },
+      },
+      plugins: {
+        legend: { labels: { color: '#e6edf3', usePointStyle: true, boxWidth: 8, padding: 12 } },
+        annotation: {
+          annotations: {
+            half: { type: 'line', yMin: 0.5, yMax: 0.5, borderColor: '#484f58', borderWidth: 1, borderDash: [3, 3] },
+          },
+        },
+        tooltip: {
+          backgroundColor: '#1c2128', borderColor: '#30363d', borderWidth: 1,
+          titleColor: '#e6edf3', bodyColor: '#8b949e',
+          callbacks: { label: ctx => `${ctx.dataset.label}: ${(ctx.parsed.y * 100).toFixed(1)}%` },
+        },
+      },
+    },
+  });
+}
+
+// ========================================
+// Chart 3: Adaptive Weight History
+// ========================================
+function drawWeightsChart(data) {
+  const ctx = document.getElementById('weights-chart').getContext('2d');
+  if (weightsChart) weightsChart.destroy();
+
+  if (!data.history || data.history.length === 0) {
+    weightsChart = new Chart(ctx, {
+      type: 'line', data: { datasets: [] },
+      options: { responsive: true, maintainAspectRatio: false,
+        plugins: { title: { display: true, text: 'No adaptive weight data yet', color: '#6e7681' } } }
+    });
+    return;
+  }
+
+  const models = [
+    { key: 'ensemble', label: 'GFS Ensemble', color: '#db6d28' },
+    { key: 'ecmwf', label: 'ECMWF IFS', color: '#f778ba' },
+    { key: 'hrrr', label: 'HRRR', color: '#58a6ff' },
+    { key: 'nws', label: 'NWS', color: '#39d2c0' },
+  ];
+
+  const datasets = models.map(m => ({
+    label: m.label,
+    data: data.history
+      .filter(h => h[m.key] != null)
+      .map(h => ({ x: utcDate(h.at), y: h[m.key] })),
+    borderColor: m.color,
+    backgroundColor: m.color + '20',
+    borderWidth: 2,
+    pointRadius: 3,
+    pointBackgroundColor: m.color,
+    fill: true,
+    tension: 0.3,
+  }));
+
+  // Current weights annotation
+  const currentLabel = data.current
+    ? Object.entries(data.current).map(([k, v]) => `${k}: ${(v * 100).toFixed(0)}%`).join('  |  ')
+    : '';
+
+  weightsChart = new Chart(ctx, {
+    type: 'line',
+    data: { datasets },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'nearest', intersect: false },
+      scales: {
+        x: {
+          type: 'time',
+          time: { tooltipFormat: 'MMM d', unit: 'day' },
+          grid: { color: '#21262d' },
+          ticks: { color: '#8b949e', maxTicksLimit: 10 },
+        },
+        y: {
+          min: 0, max: 1,
+          stacked: false,
+          grid: { color: '#21262d' },
+          ticks: { color: '#8b949e', callback: v => (v * 100).toFixed(0) + '%' },
+          title: { display: true, text: 'Weight', color: '#8b949e' },
+        },
+      },
+      plugins: {
+        legend: { labels: { color: '#e6edf3', usePointStyle: true, boxWidth: 8, padding: 12 } },
+        subtitle: {
+          display: !!currentLabel,
+          text: `Current: ${currentLabel}`,
+          color: '#8b949e',
+          font: { size: 11 },
+          padding: { bottom: 8 },
+        },
+        tooltip: {
+          backgroundColor: '#1c2128', borderColor: '#30363d', borderWidth: 1,
+          titleColor: '#e6edf3', bodyColor: '#8b949e',
+          callbacks: { label: ctx => `${ctx.dataset.label}: ${(ctx.parsed.y * 100).toFixed(1)}%` },
+        },
+      },
+    },
+  });
+}
+
+// ========================================
+// Event listeners + initial load
+// ========================================
+document.getElementById('city-select').addEventListener('change', refresh);
+document.getElementById('date-input').addEventListener('change', refresh);
+document.getElementById('ticker-select').addEventListener('change', () => {
+  // Re-draw prob chart only
+  const city = document.getElementById('city-select').value;
+  const dateStr = document.getElementById('date-input').value;
+  const ticker = document.getElementById('ticker-select').value;
+  fetch(`/api/evolution/probabilities?city=${city}&date=${dateStr}&ticker=${ticker}`)
+    .then(r => r.json())
+    .then(drawProbChart);
+});
+
+refresh();
+</script>
+</body>
+</html>

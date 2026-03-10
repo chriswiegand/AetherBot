@@ -264,6 +264,11 @@ class KalshiClient:
             remaining=order.get("remaining_count", count),
         )
 
+    def get_order(self, order_id: str) -> dict:
+        """Get order details by ID."""
+        data = self._request("GET", f"/portfolio/orders/{order_id}", auth=True)
+        return data.get("order", data)
+
     def cancel_order(self, order_id: str) -> bool:
         """Cancel an order."""
         try:

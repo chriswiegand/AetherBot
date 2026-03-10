@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 
 from src.data.db import get_session
-from src.data.models import BrierScore
+from src.data.models import BrierScore, ModelScorecard
 
 logger = logging.getLogger(__name__)
 
@@ -61,3 +61,51 @@ class BrierTracker:
         recent = self.get_overall_brier(days=7)
         baseline = self.get_overall_brier(days=30)
         return recent > baseline + threshold
+
+    def is_calibrator_helping(self, days: int = 14) -> bool:
+        """Compare calibrated vs blended Brier in ModelScorecard.
+
+        Returns True if the calibrated model is outperforming (lower Brier)
+        the raw blended model over the last N days.
+        """
+        session = get_session()
+        try:
+            cutoff = (date.today() - timedelta(days=days)).isoformat()
+
+            # Get average Brier for calibrated source
+            calibrated_rows = (
+                session.query(ModelScorecard.brier_contribution)
+                .filter(
+                    ModelScorecard.model_source == "calibrated",
+                    ModelScorecard.target_date >= cutoff,
+                    ModelScorecard.brier_contribution.isnot(None),
+                )
+                .all()
+            )
+
+            # Get average Brier for blended source
+            blended_rows = (
+                session.query(ModelScorecard.brier_contribution)
+                .filter(
+                    ModelScorecard.model_source == "blended",
+                    ModelScorecard.target_date >= cutoff,
+                    ModelScorecard.brier_contribution.isnot(None),
+                )
+                .all()
+            )
+
+            if not calibrated_rows or not blended_rows:
+                return True  # Not enough data — assume helping
+
+            avg_calibrated = sum(r[0] for r in calibrated_rows) / len(calibrated_rows)
+            avg_blended = sum(r[0] for r in blended_rows) / len(blended_rows)
+
+            logger.info(
+                f"Calibrator check ({days}d): calibrated Brier={avg_calibrated:.4f}, "
+                f"blended Brier={avg_blended:.4f}"
+            )
+
+            return avg_calibrated <= avg_blended
+
+        finally:
+            session.close()

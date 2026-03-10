@@ -14,10 +14,14 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 
 from src.config.cities import CityConfig
+from src.config.settings import AppSettings, load_settings
 from src.data.db import get_session
 from src.data.iem_client import IEMClient
 from src.data.models import Trade, BrierScore, Observation
+from src.data.parquet_archiver import archive_convergence_trajectory
 from src.execution.paper_trader import PaperTrader
+from src.monitoring.model_scorer import ModelScorer
+from src.monitoring.postmortem import PostmortemGenerator
 from src.utils.temperature import settles_above, settles_in_bracket
 
 logger = logging.getLogger(__name__)
@@ -40,10 +44,14 @@ class SettlementChecker:
         self,
         cities: dict[str, CityConfig],
         paper_trader: PaperTrader | None = None,
+        settings: AppSettings | None = None,
     ):
         self.cities = cities
         self.iem = IEMClient()
         self.paper_trader = paper_trader
+        self.settings = settings or load_settings()
+        self.model_scorer = ModelScorer()
+        self.postmortem_gen = PostmortemGenerator()
 
     def check_settlements(
         self, target_date: str | None = None
@@ -127,7 +135,56 @@ class SettlementChecker:
                 f"{wins}W/{losses}L, PnL=${total_pnl:+.2f}"
             )
 
+        # --- Post-settlement analysis (best-effort) ---
+        self._run_post_settlement_analysis(target_date, cli_data)
+
         return results
+
+    def _run_post_settlement_analysis(
+        self,
+        target_date: str,
+        cli_data: dict[str, int | None],
+    ) -> None:
+        """Run model scoring, convergence archival, and postmortem after settlement."""
+        for city_name, observed_high in cli_data.items():
+            if observed_high is None:
+                continue
+            try:
+                # Score all models against settlement outcome
+                self.model_scorer.score_settlement(
+                    city=city_name,
+                    target_date=target_date,
+                    observed_high=float(observed_high),
+                )
+            except Exception as e:
+                logger.error(f"Model scoring failed for {city_name} {target_date}: {e}")
+
+            try:
+                # Archive convergence trajectory to Parquet
+                session = get_session()
+                try:
+                    archive_convergence_trajectory(
+                        config=self.settings.archival,
+                        city=city_name,
+                        target_date=target_date,
+                        observed_high=float(observed_high),
+                        session=session,
+                    )
+                finally:
+                    session.close()
+            except Exception as e:
+                logger.error(f"Convergence archival failed for {city_name} {target_date}: {e}")
+
+            try:
+                # Generate postmortem report
+                self.postmortem_gen.generate(
+                    city=city_name,
+                    target_date=target_date,
+                    observed_high=float(observed_high),
+                    archival_config=self.settings.archival,
+                )
+            except Exception as e:
+                logger.error(f"Postmortem failed for {city_name} {target_date}: {e}")
 
     def _settle_trade(
         self, trade: Trade, observed_high: int, session
